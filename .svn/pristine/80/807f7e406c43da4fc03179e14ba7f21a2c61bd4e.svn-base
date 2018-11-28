@@ -1,0 +1,305 @@
+package cu.aotain.osmp.task.service;
+
+import com.aotain.common.config.ContextUtil;
+import com.aotain.common.config.LocalConfig;
+import com.aotain.common.config.redis.BaseRedisService;
+import com.aotain.common.utils.compress.zip.ZipDecompress;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserServiceInformationDTO;
+import com.aotain.cu.serviceapi.model.BaseModel;
+import com.aotain.cu.serviceapi.model.IdcJcdmXzqydm;
+import com.aotain.cu.serviceapi.model.UserInformation;
+import cu.aotain.osmp.task.util.HanLpUtil;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringEscapeUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import scala.util.parsing.combinator.testing.Str;
+
+import java.io.*;
+import java.util.*;
+
+public abstract class CrmsAndIpcFileHandle<T> {
+
+    private static Logger logger = LoggerFactory.getLogger(CrmsAndIpcFileHandle.class);
+
+    @Autowired
+    protected ZipDecompress zipDecompress;
+
+    @Autowired
+    protected VerificationInfo info;
+
+    /**
+     * 解析文件入口最终返回解析后的对象
+     * @return
+     */
+    public T returnHanderFile(){
+        try {
+            if (initParam()){
+                Map<String,TreeMap<Long ,String >> content = this.process(getValue("dataPath"));
+                if (content!=null && content.size()>0){
+                    return constructUserObj(content);
+                }
+            }
+        }catch (Exception e){
+            logger.error("parse file error ",e);
+        }
+        return null;
+    }
+
+    /**
+     * 核验文件
+     * @param content
+     * @param verFile
+     * @return
+     */
+    protected abstract boolean validate(Map<Long ,String> content,File verFile);
+
+    /**
+     * 初始化文件路径参数
+     * @return
+     */
+    private boolean initParam(){
+        //数据路径
+//      String dataPath = LocalConfig.getInstance().getHashValueByHashKey("data.crms.path");
+        String dataPath = "E:\\svn\\CU_OSMP\\bsmp_crms\\";
+        if (!dataPath.endsWith(File.separator)){
+            dataPath = dataPath+File.separator;
+        }
+        String type=returnType();
+        String dataBack = dataPath.replace(type,type+"_bck");
+        String dataError = dataPath.replace(type,type+"_error");
+        setValue("dataPath",dataPath);
+        setValue("dataBack",dataBack);
+        setValue("dataError",dataError);
+        return unZip();
+    }
+
+
+    /**
+     * 解压
+     * @return
+     */
+    public boolean unZip() {
+
+        List<File> files;
+        try {
+            File folder = new File(getValue("dataPath"));
+            File[] templates = folder.listFiles(new FilenameFilter() {
+                @Override
+                public boolean accept(File dir, String name) {
+                    if (name.startsWith("verification_")) {
+                        return true;
+                    }
+                    return false;
+                }
+            });
+
+            if (templates.length<1) return false;
+            doVerifiyInfo(templates[0]);
+            if ((files=getOkFile())!=null && !files.isEmpty()){
+                for (File zipFile:files){
+                    zipDecompress.process(zipFile,new File(zipFile.getParent()));
+                }
+                return true;
+            }
+        } catch (Exception e) {
+            logger.error("", e);
+        }
+        return false;
+    }
+
+    /**
+     * 根据ok文件获取CSV or txt 文件
+     * @return
+     */
+    private List<File> getOkFile(){
+
+        File folder = new File(getValue("dataPath"));
+        File[] templates = folder.listFiles(new FilenameFilter() {
+            @Override
+            public boolean accept(File dir, String name) {
+                if ("ok".equals(FilenameUtils.getExtension(name))) {
+                    return true;
+                }
+                return false;
+            }
+        });
+        if (templates.length<1) return null;
+
+        List<File> files = new ArrayList<>();
+        File zipFile;
+        for (File file:templates){
+            if ((zipFile=new File(file.getAbsolutePath().replaceAll("ok", "zip"))).exists()) {
+                files.add(zipFile);
+           }
+         }
+        return files;
+    }
+
+    /**
+     * ,读取核验文件信息放入缓存
+     * @param file
+     */
+    protected abstract void doVerifiyInfo(File file);
+    /**
+     * 备份文件
+     */
+    protected void backFile(File file){
+        File backFile = new File(getValue("dataBack") + file.getName());
+        if (!backFile.getParentFile().exists()){
+            backFile.getParentFile().mkdirs();
+        }
+        file.renameTo(backFile);
+    }
+
+    /**
+     * 备份错误文件
+     */
+    protected void backErrorFile(File file){
+        File errorFile = new File(getValue("dataError")+ file.getName());
+        if (!errorFile.getParentFile().exists()){
+            errorFile.getParentFile().mkdirs();
+        }
+        file.renameTo(errorFile);
+    }
+
+    /**
+     * 清理文件
+     * @param path
+     * @return
+     */
+    protected boolean clearFile(String path){
+        File file = new File(path);
+        if(!file.exists()){//判断是否待删除目录是否存在
+            System.err.println("The dir are not exists!");
+            return false;
+        }
+
+        String[] content = file.list();//取得当前目录下所有文件和文件夹
+        for(String name : content){
+            File temp = new File(path, name);
+            if(temp.isDirectory()){//判断是否是目录
+                clearFile(temp.getAbsolutePath());//递归调用，删除目录里的内容
+                temp.delete();//删除空目录
+            }else{
+                if(!temp.delete()){//直接删除文件
+                    logger.error("Failed to delete " + name);
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 解析CSV/txt文件
+     * @param dataPath
+     */
+    protected abstract Map<String,TreeMap<Long ,String > > process( String dataPath );
+
+    /**
+     * 系统类型CRMS or ICP
+     * @return
+     */
+    protected abstract String returnType();
+
+
+    /**
+     * 子类中设置值
+     * @param k
+     * @param v
+     */
+    protected abstract void setValue(String k,String v);
+
+    /**
+     * 子类获取值
+     * @param k
+     * @return
+     */
+    protected abstract String getValue(String k);
+
+    /**
+     * 组装返回对象
+     * @param contents
+     * @return
+     */
+    protected abstract T constructUserObj(Map<String,TreeMap<Long,String>> contents);
+
+    /**
+     * 结束操作
+     */
+    protected abstract void end();
+
+
+    /**
+     * 分词 获取地市和邮编
+     * @param hh
+     * @return
+     */
+    protected void setAreaCodeByAddress( BaseModel model, String hh){
+
+        HanLpUtil hanLpUtil = HanLpUtil.getInstance();
+        List<String> after = hanLpUtil.segArea(hh);
+
+        BaseRedisService<String,String,String> baseRedisService = ContextUtil.getContext().getBean(BaseRedisService.class);
+        List<Map<String,String>> result = new ArrayList<>();
+        Map<String,String> code;
+        for (String mc:after){
+            code = baseRedisService.getHashs("IDC_JCDM_XZQYDM:"+mc);
+            if (code!=null){
+                result.add(code);
+            }
+        }
+        if (result.isEmpty()) return;
+        if (model instanceof UserInformation) {
+            UserInformation information = (UserInformation)model;
+            for (Map<String, String> codeMap : result) {
+                if (codeMap.get("CODELEVEL") == "3") {
+                    information.setUnitAddressAreaCode(codeMap.get("CODE"));
+                    information.setUnitAddressAreaName(codeMap.get("MC"));
+                    information.setUnitZipCode(codeMap.get("POSTCODE"));
+                }
+                if (codeMap.get("CODELEVEL") == "1") {
+                    information.setUnitAddressProvinceCode(codeMap.get("CODE"));
+                    information.setUnitAddressProvinceName(codeMap.get("MC"));
+                    if (StringUtils.isEmpty(information.getUnitZipCode())) {
+                        information.setUnitZipCode(codeMap.get("POSTCODE"));
+                    }
+                }
+                if (codeMap.get("CODELEVEL") == "2") {
+                    information.setUnitAddressCityCode(codeMap.get("CODE"));
+                    information.setUnitAddressCityName(codeMap.get("MC"));
+                    if (StringUtils.isEmpty(information.getUnitZipCode())) {
+                        information.setUnitZipCode(codeMap.get("POSTCODE"));
+                    }
+                }
+            }
+        }else if( model instanceof UserServiceInformationDTO){
+            for (Map<String, String> codeMap : result) {
+                if (codeMap.get("CODELEVEL") == "1") {
+                    if (StringUtils.isEmpty(model.getAreaCode())){
+                        model.setAreaCode(codeMap.get("CODE"));
+                    }
+                }
+                if (codeMap.get("CODELEVEL") == "2") {
+                    model.setAreaCode(codeMap.get("CODE"));
+                }
+            }
+        }
+    }
+
+    /**
+     * 根据key去redis获取值
+     * @param key
+     * @param value
+     * @return
+     */
+    protected String getValueFormRedis(String key,String value){
+        BaseRedisService<String,String,String> baseRedisService = ContextUtil.getContext().getBean(BaseRedisService.class);
+        String result = baseRedisService.getHash(key+":"+value,"ID");
+        return result;
+    }
+
+}

@@ -1,0 +1,23 @@
+package cu.aotain.osmp.task.serviceapi;
+
+
+import com.aotain.cu.serviceapi.dto.HouseFrameInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserBandwidthInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.model.PageResult;
+import org.apache.log4j.Logger;
+
+import java.util.List;
+
+public class RackServiceApiHystrix implements RackServiceApi {
+
+    protected static final Logger LOG = Logger.getLogger(RackServiceApiHystrix.class);
+
+    @Override
+    public PageResult<HouseFrameInformationDTO> queryRack(HouseFrameInformationDTO rack) {
+        LOG.error("queryRack request fail  : " + this.getClass().getName());
+        return null;
+    }
+
+
+}

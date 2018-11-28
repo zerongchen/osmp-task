@@ -1,0 +1,361 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.alibaba.fastjson.JSON;
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import com.aotain.cu.serviceapi.dto.UserBandwidthInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.csvreader.CsvReader;
+import cu.aotain.osmp.task.service.CrmsAndIpcFileHandle;
+import cu.aotain.osmp.task.service.ProcessService;
+import cu.aotain.osmp.task.service.UserInfo;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApi;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApiHystrix;
+import cu.aotain.osmp.task.util.FileTools;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.lang.CharEncoding;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.io.*;
+import java.util.*;
+
+@Service
+public class CrmsProcessServiceImpl extends CrmsAndIpcFileHandle<UserInfo> implements ProcessService {
+
+    private static Map<String ,String > paramMap =new HashMap<>();
+    private static Logger logger = LoggerFactory.getLogger(CrmsProcessServiceImpl.class);
+    private Map<Integer ,String > userDataMap;
+    private Map<Integer ,String > userBindDataMap;
+    private List<String> errorList;
+    private UserInfoServiceApi api ;
+
+
+    @Override
+    public Map<String,List<String>> process( String path ) {
+
+
+        File folder = new File(path);
+        File[] templates = folder.listFiles(new FilenameFilter() {
+            @Override
+            public boolean accept(File dir, String name) {
+                if ("txt".equals(FilenameUtils.getExtension(name))) {
+                    return true;
+                }
+                return false;
+            }
+        });
+        if (templates.length<1) return null;
+        InputStream input;
+        Map<String,List<String>> contentMap  = new HashMap<>();
+        for (File file:templates){
+            try {
+                List<String> sigleContent  =new ArrayList<String>();
+                input = new BufferedInputStream(new FileInputStream(file));
+                InputStreamReader read = new InputStreamReader( input, CharEncoding.UTF_8);
+                BufferedReader bufferedReader = new BufferedReader(read);
+                String lineTXT = null;
+                while ((lineTXT = bufferedReader.readLine()) != null) {
+                    sigleContent.add(lineTXT.toString());
+                }
+                input.close();
+                if (validate(sigleContent,file)){
+                    //通过,备份
+                    backFile(file);
+                    contentMap.put(file.getName(),sigleContent);
+                }else {
+                    backErrorFile(file);
+                }
+            } catch (FileNotFoundException e) {
+                logger.error("",e);
+            }catch (UnsupportedEncodingException e) {
+                logger.error("parse file error ["+file.getName()+"]",e);
+            } catch (IOException e) {
+                logger.error("read txt file error ["+file.getName()+"]",e);
+            }finally {
+
+            }
+        }
+        return contentMap;
+
+    }
+
+    @Override
+    protected boolean validate( List<String> content, File verFile ) {
+            if (content.size()==(int) info.getVerificationMap().get("CRMS").get(verFile.getName())){
+                return true;
+            }
+            return false;
+    }
+
+    @Override
+    protected void doVerifiyInfo(File file){
+        try {
+            // 创建CSV读对象
+            CsvReader csvReader = FileTools.createCsvReader(file);
+            // 读表头
+            csvReader.readHeaders();
+            HashMap<String,Object> map = new HashMap<String,Object>();
+            while (csvReader.readRecord()){
+                map.put( csvReader.get(0), Integer.parseInt(csvReader.get(1)));
+            }
+            info.getVerificationMap().put("CRMS",map);
+            csvReader.close();
+        } catch (Exception e) {
+            logger.error("error get data from "+file.getName(),e);
+        }
+
+    }
+
+    @Override
+    public String returnType() {
+        return "bsmp_crms";
+    }
+
+    @Override
+    public void setValue( String k, String v ) {
+        paramMap.put(k,v);
+    }
+
+    @Override
+    public String getValue( String k ) {
+        return paramMap.get( k);
+    }
+
+    @Override
+    protected UserInfo constructUserObj(Map<String,List<String>> contents ) {
+
+        List<UserInformationDTO> users = new ArrayList<>();
+        List<UserBandwidthInformationDTO> userBinds = new ArrayList<>();
+
+        userDataMap=new HashMap<Integer, String>();
+        userBindDataMap=new HashMap<Integer, String>();
+        errorList= new ArrayList<>();
+        contents.forEach((k,v)->{
+
+            for (String txt:v){
+                try {
+                    String[] cont = txt.split("\\|");
+                    UserInformationDTO information = new UserInformationDTO();
+                    UserBandwidthInformationDTO userBand = new UserBandwidthInformationDTO();
+                    //处理逻辑
+                    information.setNature(2);
+                    information.setIdentify("5");
+                    information.setUnitName(cont[1]);
+                    information.setUserCode(cont[2]);
+                    information.setUnitNature(Integer.parseInt(cont[6]));
+                    information.setIdType(Integer.parseInt(cont[7]));
+                    information.setIdNumber(cont[8]);
+                    information.setUnitAddress(cont[9]);
+                    information.setRegisteTime(cont[10]);
+                    information.setServiceRegTime(cont[11]);
+                    information.setOfficerName(cont[12]);
+                    information.setOfficerIdType(Integer.parseInt(cont[13]));
+                    information.setOfficerId(cont[14]);
+                    information.setOfficerTelphone(cont[15]);
+                    information.setOfficerMobile(cont[16]);
+                    information.setOfficerEmail(cont[17]);
+
+                    userBand.setUnitName(cont[2]);
+                    userBand.setHouseName(cont[18]);
+                    userBand.setDistributeTime(cont[19]);
+                    userBand.setBandWidth(Long.parseLong(cont[20]));
+
+                    users.add(information);
+                    userBinds.add(userBand);
+                    userDataMap.put(information.hashCode(),txt);
+                    userBindDataMap.put(userBand.hashCode(),txt);
+                }catch (Exception e){
+                    logger.error("parse txt param error",e);
+                    errorList.add(txt);
+                }
+
+            }
+        });
+        UserInfo info = new UserInfo();
+        info.setUsers(users);
+        info.setUserBinds(userBinds);
+        return info;
+    }
+
+    @Override
+    public void execute() {
+
+        UserInfo userInfo = returnHanderFile();
+        //get current data
+        if (userInfo!=null) {
+            api = BaseFeignBuilder.getCacheFeign(UserInfoServiceApi.class, "myclient", new UserInfoServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+            UserInformationDTO userparam = new UserInformationDTO();
+            userparam.setIsPaging(0);
+            userparam.setIdentify("5");
+            PageResult<UserInformationDTO> userPageResult = api.getAllUser(userparam);
+
+            UserBandwidthInformationDTO bindparam = new UserBandwidthInformationDTO();
+            bindparam.setIsPaging(0);
+            bindparam.setIdentify("5");
+            PageResult<UserBandwidthInformationDTO> userBindPageResult = api.getAllUserBind(bindparam);
+
+            /**
+             * 用户主体
+             */
+            List<UserInformationDTO> addUserList = new ArrayList<>();
+            List<UserInformationDTO> modifyUserList = new ArrayList<>();
+            List<UserInformationDTO> commonUser = new ArrayList<>();
+            List<UserInformationDTO> deleteUserList = new ArrayList<>();
+
+            if (userPageResult != null && userPageResult.getRows().size()>0) {
+                List<UserInformationDTO> userTableDatas = userPageResult.getRows();
+                if (userInfo.getUsers() != null && !userInfo.getUsers().isEmpty()) {
+                    loop1:
+                    for (UserInformationDTO fileDto : userInfo.getUsers()) {
+                        loop2:
+                        for (UserInformationDTO tableDto : userTableDatas) {
+                            if (fileDto.getUnitName().equals(tableDto.getUnitName())) {
+                                if (fileDto.getIdType() != null && tableDto.getIdType() != null
+                                        && fileDto.getIdNumber() != null && tableDto.getIdNumber() != null) {
+                                    //需要比较ID && IDType
+                                    if (fileDto.getIdType() == tableDto.getIdType()
+                                            && fileDto.getIdNumber().equals(fileDto.getIdNumber())) {
+                                        //名字证件号码都一样,修改
+                                        fileDto.setUserId(tableDto.getUserId());
+                                        modifyUserList.add(fileDto);
+                                        commonUser.add(tableDto);
+                                        break loop2;
+                                    }
+                                } else {
+                                    //不需要比较证件,相同名字视为一样 修改
+                                    fileDto.setUserId(tableDto.getUserId());
+                                    modifyUserList.add(fileDto);
+                                    commonUser.add(tableDto);
+                                    break loop2;
+                                }
+                            }
+                        }
+                        addUserList.add(fileDto);
+                    }
+                    //待删除的
+                    deleteUserList.addAll(userTableDatas);
+                    deleteUserList.removeAll(commonUser);
+                } else {
+                    deleteUserList.addAll(userTableDatas);
+                }
+            } else {
+                addUserList.addAll(userInfo.getUsers());
+            }
+
+            /**
+             * 带宽操作
+             */
+            List<UserBandwidthInformationDTO> addUseBindrList = new ArrayList<>();
+            List<UserBandwidthInformationDTO> modifyUserBindList = new ArrayList<>();
+            List<UserBandwidthInformationDTO> commonUserBind = new ArrayList<>();
+            List<UserBandwidthInformationDTO> deleteUserBindList = new ArrayList<>();
+            if (userBindPageResult != null && userBindPageResult.getRows().size()>0) {
+                List<UserBandwidthInformationDTO> userBindTableDatas = userBindPageResult.getRows();
+                if (userInfo.getUserBinds() != null && !userInfo.getUserBinds().isEmpty()) {
+                    loop1:
+                    for (UserBandwidthInformationDTO fileDto : userInfo.getUserBinds()) {
+                        loop2:
+                        for (UserBandwidthInformationDTO tableDto : userBindTableDatas) {
+                            if (fileDto.getUnitName().equals(tableDto.getUnitName())
+                                    && fileDto.getHouseName().equals(tableDto.getHouseName())) {
+                                fileDto.setHhId(tableDto.getHhId());
+                                fileDto.setHouseId(tableDto.getHouseId());
+                                modifyUserBindList.add(fileDto);
+                                commonUserBind.add(tableDto);
+                                break loop2;
+                            }
+                        }
+                        addUseBindrList.add(fileDto);
+                    }
+                    //待删除的
+                    deleteUserBindList.addAll(userBindTableDatas);
+                    deleteUserBindList.removeAll(commonUserBind);
+                } else {
+                    deleteUserBindList.addAll(userBindTableDatas);
+                }
+            } else {
+                addUseBindrList.addAll(userInfo.getUserBinds());
+            }
+
+
+            //入库(主体)
+
+            insertUsers(addUserList);
+            updateUsers(modifyUserList);
+//            deleteUsers(deleteUserList);
+
+            //入库(带宽)
+            addUserBinds(addUseBindrList);
+            updateUserBinds(modifyUserBindList);
+//            deleteUserBinds(deleteUserBindList);
+
+//            clearFile(getValue("dataPath"));
+        }
+    }
+
+    private void insertUsers(List<UserInformationDTO> dtos){
+        if (dtos!=null && !dtos.isEmpty()){
+            ResultDto resultDto;
+            for (UserInformationDTO dto:dtos){
+                try {
+                    resultDto = api.insertsUser(dto);
+                    if (resultDto.getResultCode()!=ResultDto.ResultCodeEnum.SUCCESS.getCode()){
+                        errorList.add(userDataMap.get(dto.hashCode()));
+                    }
+                }catch (Exception e){
+                    logger.error("insert user error"+ JSON.toJSONString(dto),e);
+                    errorList.add(userDataMap.get(dto.hashCode()));
+                }
+            }
+
+        }
+    }
+    private void updateUsers(List<UserInformationDTO> dtos){
+        if (dtos!=null && !dtos.isEmpty()){
+            ResultDto resultDto;
+            for (UserInformationDTO dto:dtos){
+                try {
+                    resultDto = api.updateUsers(dto);
+                    if (resultDto.getResultCode()!=ResultDto.ResultCodeEnum.SUCCESS.getCode()){
+                        errorList.add(userDataMap.get(dto.hashCode()));
+                    }
+                }catch (Exception e){
+                    logger.error("insert user error"+ JSON.toJSONString(dto),e);
+                    errorList.add(userDataMap.get(dto.hashCode()));
+                }
+            }
+
+        }
+    }
+    private void deleteUsers(List<UserInformationDTO> dtos){
+        if (dtos!=null && !dtos.isEmpty()){
+            StringBuilder sb =new StringBuilder();
+            for (UserInformationDTO dto:dtos){
+                sb.append(dto.getUserId()).append(",");
+            }
+            api.deleteUsers(sb.substring(0,sb.length()-1));
+        }
+    }
+
+    private void addUserBinds(List<UserBandwidthInformationDTO> dtos){
+        if (dtos==null && dtos.isEmpty()) return;
+        api.insertsUserBinds(dtos);
+    }
+
+    private void updateUserBinds(List<UserBandwidthInformationDTO> dtos){
+        if (dtos==null && dtos.isEmpty()) return;
+        api.updateUserBinds(dtos);
+    }
+
+    private void deleteUserBinds(List<UserBandwidthInformationDTO> dtos){
+        if (dtos==null && dtos.isEmpty()) return;
+        List<Long> ids = new ArrayList<>();
+        for (UserBandwidthInformationDTO dto:dtos){
+            ids.add(dto.getHhId());
+        }
+        api.deleteUsersBinds(ids);
+    }
+}

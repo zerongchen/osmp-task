@@ -1,0 +1,27 @@
+package cu.aotain.osmp.task.serviceapi;
+
+
+import com.aotain.cu.serviceapi.dto.UserBandwidthInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import feign.Headers;
+import feign.RequestLine;
+import org.apache.log4j.Logger;
+
+import java.util.List;
+
+public class UserInfoServiceApiHystrix implements UserInfoServiceApi {
+
+    protected static final Logger LOG = Logger.getLogger(DemoServiceHystrix.class);
+
+    @Override
+    public List<UserInformationDTO> getAllUser(UserInformationDTO dto) {
+        LOG.error("get all user data error");
+        return null;
+    }
+
+    @Override
+    public List<UserBandwidthInformationDTO> getAllUserBind(UserBandwidthInformationDTO dto) {
+        LOG.error("get all user bind data error");
+        return null;
+    }
+}

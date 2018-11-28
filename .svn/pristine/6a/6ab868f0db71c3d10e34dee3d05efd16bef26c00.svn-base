@@ -1,0 +1,173 @@
+package cu.aotain.osmp.task.core.common;
+
+import java.io.File;
+import java.io.FileFilter;
+import java.io.FilenameFilter;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.commons.io.monitor.FileAlterationListenerAdaptor;
+import org.apache.commons.io.monitor.FileAlterationMonitor;
+import org.apache.commons.io.monitor.FileAlterationObserver;
+import org.apache.commons.lang.StringUtils;
+import org.apache.log4j.Logger;
+
+import cu.aotain.osmp.task.core.IImportTask;
+
+/**
+ * 硬盘文件导入任务 监听硬盘上的一个文件夹,将满足配置要求的文件及其校验文件分配给相应的IImportJob进行处理
+ * 
+ * @author liuz@aotian.com
+ * @date 2018年8月28日 下午1:57:16
+ */
+public class HardFileImportTask implements IImportTask {
+	private Logger logger = Logger.getLogger(HardFileImportTask.class);
+	private File monitorDir = null; // 监控目录
+	private String monitorFileNameRegex;
+	private String monitorFileNameSuffix;
+	private String monitorFileNameSuffixOrg; //监控文件原始文件后缀
+	private String collectFileNameRegex; // 采集文件名匹配正则
+	private String collectFileNameSuffix; // 采集文件名后缀，为空时，默认截取文件名最后一个'.'及之后的数据作为后缀
+	private FileAlterationMonitor monitor;
+
+	@Override
+	public void init(Map<String, String> params) {
+		if (params == null) {
+			throw new RuntimeException("init fail - params is null");
+		}
+		String path = params.get("engine.monitorDir");
+		if (StringUtils.isBlank(path)) {
+			throw new RuntimeException("init fail - params [engine.monitorDir] is null");
+		}
+		// engine.monitorFileNameRegex=^verification_[\\d\\.-]+\\.csv\\.ok$
+		// engine.monitorFileNameSuffix=.ok
+		// engine.targetFileNameRegex
+		monitorFileNameRegex = params.get("engine.monitorFileNameRegex");
+		if (StringUtils.isBlank(monitorFileNameRegex)) {
+			throw new RuntimeException("init fail - params [engine.monitorFileNameRegex] is null");
+		}
+		monitorFileNameSuffix = params.get("engine.monitorFileNameSuffix");
+		if (StringUtils.isBlank(monitorFileNameSuffix)) {
+			monitorFileNameSuffix = ""; // 直接使用监控文件作为核验文件
+		}
+		collectFileNameRegex = params.get("engine.targetFileNameRegex");
+		if (StringUtils.isBlank(collectFileNameRegex)) {
+			throw new RuntimeException("init fail - params [engine.targetFileNameRegex] is null");
+		}
+		monitorFileNameSuffixOrg = params.get("engine.monitorFileNameSuffix");
+		if (StringUtils.isBlank(monitorFileNameSuffixOrg)) {
+			monitorFileNameSuffixOrg = "";
+		}
+		File dir = new File(path);
+		// 目录不存在
+		if (!dir.exists()) {
+			boolean success = dir.mkdirs();
+			if (!success) {
+				throw new RuntimeException("init fail - cannot create dir : " + path);
+			}
+		}
+		this.monitorDir = dir;
+	}
+
+	@Override
+	public void start() {
+		FileAlterationObserver fileObserver = new FileAlterationObserver(this.monitorDir, new FileFilter() {
+			@Override
+			public boolean accept(File pathname) {
+				if (pathname.isDirectory()) {
+					return true;
+				}
+				return pathname.getName().toString().matches(monitorFileNameRegex);
+			}
+		});
+		fileObserver.addListener(new FileAlterationListenerAdaptor() {
+			@Override
+			public void onFileCreate(File file) {
+				logger.info("file: " + file.getAbsolutePath() + " is created.");
+				dispatchFile(file);
+			}
+		});
+		monitor = new FileAlterationMonitor(100, new FileAlterationObserver[] { fileObserver });
+		try {
+			monitor.start();
+		} catch (Exception e) {
+			logger.error("monitor service start fail : monitorDir=" + this.monitorDir.getAbsolutePath(), e);
+			monitor = null;
+		}
+	}
+
+	/**
+	 * 开始执行任务分发
+	 * 
+	 * @param file
+	 */
+	protected void dispatchFile(File file) {
+		File dir = file.getParentFile();
+		File verify = new File(dir.getAbsolutePath() + File.separator
+				+ file.getName().substring(0, file.getName().length() - monitorFileNameSuffix.length())+monitorFileNameSuffixOrg);
+		if (!verify.exists()) {
+			logger.error("verification file is not exist :  " + verify.getAbsolutePath());
+			return;
+		}
+		try {
+			// 监控目录下的相对路径
+			String relPath = file.getCanonicalPath().replace(monitorDir.getCanonicalPath(), "");
+			relPath = relPath.replace("\\", "/").replaceAll("^/", "");
+			String[] dirAndFileNames = relPath.split("/");
+			MonitorResult monitorInfo = new MonitorResult();
+			monitorInfo.setFileName(dirAndFileNames[dirAndFileNames.length - 1]);
+
+			// 获取相关文件，并提交给后续处理程序
+			File[] list = dir.listFiles(new FilenameFilter() {
+
+				@Override
+				public boolean accept(File dir, String name) {
+					return name.matches(collectFileNameRegex);
+				}
+			});
+
+			List<String> dirs = new ArrayList<String>();
+			if (dirAndFileNames != null && dirAndFileNames.length > 1) {
+				for (int i = 0; i < dirAndFileNames.length - 1; i++) {
+					dirs.add(dirAndFileNames[i]);
+				}
+			}
+			monitorInfo.setDirList(dirs);
+			List<File> dataList = list == null ? Collections.emptyList() : Arrays.asList(list);
+			monitorInfo.setVerifyFile(verify);
+			monitorInfo.setDataFileList(dataList);
+			monitorInfo.setMonitorPath(monitorDir.getCanonicalPath());
+			monitorInfo.setDataFileNameSuffix(collectFileNameSuffix);
+
+			// 工厂创建相应的Job实例
+			AbsHardFileMonitorJob job = HardFileMonitorJobFactory.createJob(monitorInfo);
+			if(job == null){
+				logger.error("can not find AbsHardFileMonitorJob instance for "+monitorInfo);
+				return;
+			}
+			job.init(monitorInfo);
+			logger.info("start deal monitor result : " + monitorInfo);
+			job.doProcess();
+			logger.info("complete deal monitor : " + monitorInfo);
+		} catch (IOException e) {
+			logger.error("unexpected exception ", e);
+		}
+	}
+
+	@Override
+	public void stop() {
+		if (monitor != null) {
+			try {
+				monitor.stop();
+				monitor = null;
+			} catch (Exception e) {
+				logger.error("monitor service stop fail : monitorDir=" + this.monitorDir.getAbsolutePath(), e);
+			}
+		}
+	}
+
+}

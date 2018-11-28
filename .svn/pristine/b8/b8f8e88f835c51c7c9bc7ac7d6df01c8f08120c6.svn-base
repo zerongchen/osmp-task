@@ -1,0 +1,6 @@
+package cu.aotain.osmp.task.service;
+
+public interface CrmsProcessService {
+
+    public void execute();
+}

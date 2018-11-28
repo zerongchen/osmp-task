@@ -1,0 +1,19 @@
+package cu.aotain.osmp.task.service.ipsegmanage;
+
+import com.aotain.cu.serviceapi.model.HouseIPSegmentInformation;
+
+import java.util.List;
+
+/**
+ * ip地址管理系统接口
+ *
+ * @author bang
+ * @date 2018/08/28
+ */
+public interface IpSegManageService {
+    /**
+     * 从ip地址管理系统获取所有的ip地址段信息
+     * @return
+     */
+    List<HouseIPSegmentInformation> getDataFromISMS();
+}

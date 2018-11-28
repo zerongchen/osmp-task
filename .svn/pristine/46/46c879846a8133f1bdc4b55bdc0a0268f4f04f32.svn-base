@@ -1,0 +1,124 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserServiceInformationDTO;
+import com.csvreader.CsvReader;
+import cu.aotain.osmp.task.service.CrmsAndIpcFileHandle;
+import cu.aotain.osmp.task.service.ProcessService;
+import cu.aotain.osmp.task.util.FileTools;
+import org.apache.commons.io.FilenameUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+import java.io.FilenameFilter;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@Service
+public class IpcProcessServiceImpl extends CrmsAndIpcFileHandle<List<UserServiceInformationDTO>> implements ProcessService {
+
+    private static Map<String ,String > paramMap =new HashMap<>();
+    private static Logger logger = LoggerFactory.getLogger(IpcProcessServiceImpl.class);
+    private Map<String ,String > dataMap;
+
+
+    @Override
+    protected boolean validate( List<String> content, File verFile ) {
+        if (content.size()==(int) info.getVerificationMap().get("IPC").get(verFile.getName())){
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected void doVerifiyInfo( File file ) {
+        try {
+            // 创建CSV读对象
+            CsvReader csvReader = FileTools.createCsvReader(file);
+            // 读表头
+            csvReader.readHeaders();
+            HashMap<String,Object> map = new HashMap<String,Object>();
+            while (csvReader.readRecord()){
+                map.put( csvReader.get(1), Integer.parseInt(csvReader.get(2)));
+            }
+            info.getVerificationMap().put("IPC",map);
+            csvReader.close();
+        } catch (Exception e) {
+            logger.error("error get data from "+file.getName(),e);
+        }
+    }
+
+    @Override
+    protected Map<String, List<String>> process( String dataPath ) {
+
+        File folder = new File(dataPath);
+        File[] templates = folder.listFiles(new FilenameFilter() {
+            @Override
+            public boolean accept(File dir, String name) {
+                if ("csv".equals(FilenameUtils.getExtension(name)) && !name.startsWith("verification_")) {
+                    return true;
+                }
+                return false;
+            }
+        });
+        if (templates.length<1) return null;
+        Map<String,List<String>> contentMap  = new HashMap<>();
+        for (File file:templates){
+            CsvReader csvReader = FileTools.createCsvReader(file);
+            List<String> contents = new ArrayList<String>();
+            try {
+                csvReader.readHeaders();
+                while (csvReader.readRecord()){
+
+
+                    contents.add(csvReader.get(""));
+                }
+                contentMap.put(file.getName(),contents);
+            } catch (IOException e) {
+                logger.error("",e);
+                return null;
+            }
+        }
+        return contentMap;
+    }
+
+    @Override
+    protected String returnType() {
+        return "bsmp_icp";
+    }
+
+    @Override
+    protected void setValue( String k, String v ) {
+        paramMap.put(k,v);
+    }
+
+    @Override
+    protected String getValue( String k ) {
+        return paramMap.get(k);
+    }
+
+    @Override
+    protected List<UserServiceInformationDTO> constructUserObj( Map<String, List<String>> contents ) {
+
+        List<UserServiceInformationDTO> users = new ArrayList<>();
+
+        dataMap=new HashMap<String ,String>();
+        contents.forEach((k,v)->{
+            for (String cscdata:v){
+
+
+            }
+        });
+        return null;
+    }
+
+    @Override
+    public void execute() {
+
+    }
+}

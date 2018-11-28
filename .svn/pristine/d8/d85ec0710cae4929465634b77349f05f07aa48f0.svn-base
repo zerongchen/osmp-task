@@ -1,0 +1,40 @@
+package cu.aotain.osmp.task.util;
+
+import com.hankcs.hanlp.HanLP;
+import com.hankcs.hanlp.seg.Segment;
+import com.hankcs.hanlp.seg.common.Term;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class HanLpUtil {
+
+    private Map<String,Segment> segMap = new ConcurrentHashMap<>();
+
+    private static HanLpUtil instance;
+
+    public static synchronized HanLpUtil getInstance(){
+        if (instance==null){
+            instance=new HanLpUtil();
+        }
+        return instance;
+    }
+
+    public List<String> segArea(String s){
+
+        Segment segment = segMap.get("seg");
+        if (segment==null){
+            segment = HanLP.newSegment().enableCustomDictionary(false);
+            segMap.put("seg",segment);
+        }
+        List<Term> terms = segment.seg(s);
+        List<String> after = new ArrayList<>();
+        for (Term term:terms){
+            after.add(term.word);
+        }
+        return after;
+    }
+
+}

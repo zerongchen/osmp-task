@@ -1,0 +1,234 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.aotain.cu.serviceapi.dto.UserBandwidthInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.csvreader.CsvReader;
+import cu.aotain.osmp.task.service.CrmsAndBakFileHandle;
+import cu.aotain.osmp.task.service.CrmsProcessService;
+import cu.aotain.osmp.task.service.UserInfo;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApi;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApiHystrix;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.lang.CharEncoding;
+import org.apache.hadoop.yarn.webapp.hamlet.Hamlet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.io.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@Service
+public class CrmsProcessServiceImpl extends CrmsAndBakFileHandle<UserInfo> implements CrmsProcessService {
+
+    private static Map<String ,String > paramMap =new HashMap<>();
+    private static Logger logger = LoggerFactory.getLogger(CrmsProcessServiceImpl.class);
+
+
+    @Override
+    public List<String> process( String path ) {
+
+
+        File folder = new File(path);
+        File[] templates = folder.listFiles(new FilenameFilter() {
+            @Override
+            public boolean accept(File dir, String name) {
+                if ("txt".equals(FilenameUtils.getExtension(name))) {
+                    return true;
+                }
+                return false;
+            }
+        });
+        if (templates.length<1) return null;
+        InputStream input;
+        List<String> content  =new ArrayList<String>();
+        for (File file:templates){
+            try {
+                List<String> sigleContent  =new ArrayList<String>();
+                input = new BufferedInputStream(new FileInputStream(file));
+                InputStreamReader read = new InputStreamReader( input, CharEncoding.UTF_8);
+                BufferedReader bufferedReader = new BufferedReader(read);
+                String lineTXT = null;
+                while ((lineTXT = bufferedReader.readLine()) != null) {
+                    sigleContent.add(lineTXT.toString());
+                }
+                input.close();
+                if (validate(content,file)){
+                    //通过,备份
+                    backFile(file);
+                    content.addAll(sigleContent);
+                }else {
+                    backErrorFile(file);
+                }
+            } catch (FileNotFoundException e) {
+                logger.error("",e);
+            }catch (UnsupportedEncodingException e) {
+                logger.error("parse file error ["+file.getName()+"]",e);
+            } catch (IOException e) {
+                logger.error("read txt file error ["+file.getName()+"]",e);
+            }finally {
+
+            }
+        }
+        return content;
+
+    }
+
+    @Override
+    protected void doVerifiyInfo(File file){
+        try {
+            // 创建CSV读对象
+            InputStream input = new BufferedInputStream(new FileInputStream(file));
+            InputStreamReader read = new InputStreamReader( input, CharEncoding.UTF_8);
+            CsvReader csvReader = new CsvReader(read);
+            // 读表头
+            csvReader.readHeaders();
+            HashMap<String,Object> map = new HashMap<String,Object>();
+            while (csvReader.readRecord()){
+                map.put( csvReader.get(1), Integer.parseInt(csvReader.get(2)));
+            }
+            info.getVerificationMap().put("CRMS",map);
+            input.close();
+        } catch (IOException e) {
+            logger.error("error get data from "+file.getName(),e);
+        }
+
+    }
+
+    @Override
+    public String returnType() {
+        return "bsmp_crms";
+    }
+
+    @Override
+    public void setValue( String k, String v ) {
+        paramMap.put(k,v);
+    }
+
+    @Override
+    public String getValue( String k ) {
+        return paramMap.get( k);
+    }
+
+    @Override
+    protected UserInfo constructUserObj( List<String> contents ) {
+        List<UserInformationDTO> users = new ArrayList<>();
+        List<UserBandwidthInformationDTO> userBinds = new ArrayList<>();
+        UserInformationDTO information;
+        UserBandwidthInformationDTO userBand;
+        for (String txt:contents){
+            String[] cont = txt.split("\\|");
+            information = new UserInformationDTO();
+            userBand = new UserBandwidthInformationDTO();
+            //处理逻辑
+
+
+            users.add(information);
+            userBinds.add(userBand);
+        }
+        UserInfo userInfo = new UserInfo();
+        userInfo.setUsers(users);
+        userInfo.setUserBinds(userBinds);
+        return userInfo;
+    }
+
+    @Override
+    public void execute() {
+
+        UserInfo userInfo = returnHanderFile();
+        if (userInfo!=null){
+            //get current data
+            UserInfoServiceApi api = BaseFeignBuilder.getCacheFeign(UserInfoServiceApi.class, "CRMS-client", new UserInfoServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+            UserInformationDTO userparam = new UserInformationDTO();
+            userparam.setIsPaging(0);
+            userparam.setIdentify("5");
+            List<UserInformationDTO> userTableDatas= api.getAllUser(userparam);
+            UserBandwidthInformationDTO bindparam = new UserBandwidthInformationDTO();
+            bindparam.setIsPaging(0);
+            bindparam.setIdentify("5");
+            List<UserBandwidthInformationDTO> userBindTableDatas= api.getAllUserBind(bindparam);
+
+            /**
+             * 用户主体
+             */
+            List<UserInformationDTO> addUserList = new ArrayList<>();
+            List<UserInformationDTO> modifyUserList = new ArrayList<>();
+            List<UserInformationDTO> commonUser = new ArrayList<>();
+            List<UserInformationDTO> deleteUserList = new ArrayList<>();
+
+            if (userTableDatas!=null && !userTableDatas.isEmpty()){
+                if (userInfo.getUsers()!=null && !userInfo.getUsers().isEmpty()){
+                    loop1:for (UserInformationDTO fileDto: userInfo.getUsers()){
+                        loop2:for (UserInformationDTO tableDto:userTableDatas){
+                                if (fileDto.getUnitName().equals(tableDto.getUnitName())){
+                                    if (fileDto.getIdType()!=null && tableDto.getIdType()!=null
+                                            && fileDto.getIdNumber()!=null && tableDto.getIdNumber()!=null){
+                                        //需要比较ID && IDType
+                                        if (fileDto.getIdType()==tableDto.getIdType()
+                                                && fileDto.getIdNumber().equals(fileDto.getIdNumber())){
+                                            //名字证件号码都一样,修改
+                                            fileDto.setUserId(tableDto.getUserId());
+                                            modifyUserList.add(fileDto);
+                                            commonUser.add(tableDto);
+                                            break loop2;
+                                        }
+                                    }else {
+                                        //不需要比较证件,相同名字视为一样 修改
+                                        fileDto.setUserId(tableDto.getUserId());
+                                        modifyUserList.add(fileDto);
+                                        commonUser.add(tableDto);
+                                        break loop2;
+                                    }
+                                }
+                        }
+                        addUserList.add(fileDto);
+                    }
+                    //待删除的
+                    deleteUserList.addAll(userTableDatas);
+                    deleteUserList.removeAll(commonUser);
+                }else {
+                    deleteUserList.addAll(userInfo.getUsers());
+                }
+            }else {
+                addUserList.addAll(userInfo.getUsers());
+            }
+
+            /**
+             * 带宽操作
+             */
+            List<UserBandwidthInformationDTO> addUseBindrList = new ArrayList<>();
+            List<UserBandwidthInformationDTO> modifyUserBindList = new ArrayList<>();
+            List<UserBandwidthInformationDTO> commonUserBind = new ArrayList<>();
+            List<UserBandwidthInformationDTO> deleteUserBindList = new ArrayList<>();
+            if (userBindTableDatas!=null && !userBindTableDatas.isEmpty()){
+                if (userInfo.getUserBinds()!=null && !userInfo.getUserBinds().isEmpty()){
+                    loop1: for (UserBandwidthInformationDTO fileDto: userInfo.getUserBinds()){
+                        loop2:for (UserBandwidthInformationDTO tableDto:userBindTableDatas){
+                                if (fileDto.getUnitName().equals(tableDto.getUnitName())
+                                        && fileDto.getHouseName().equals(tableDto.getHouseName())){
+                                    fileDto.setHhId(tableDto.getHhId());
+                                    modifyUserBindList.add(fileDto);
+                                    commonUserBind.add(tableDto);
+                                    break ;
+                                }
+                        }
+                        addUseBindrList.add(fileDto);
+                    }
+                    //待删除的
+                    deleteUserBindList.addAll(userBindTableDatas);
+                    deleteUserBindList.removeAll(commonUserBind);
+                }else {
+                    deleteUserBindList.addAll(userInfo.getUserBinds());
+                }
+            }else {
+                addUseBindrList.addAll(userInfo.getUserBinds());
+            }
+
+
+        }
+    }
+}

@@ -1,0 +1,354 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.aotain.common.utils.tools.FileUtils;
+import com.aotain.cu.serviceapi.dto.*;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.google.common.collect.Maps;
+import cu.aotain.osmp.task.constant.HouseAreaCodeEnum;
+import cu.aotain.osmp.task.core.gd.HardFileMonitorJobForGD;
+import cu.aotain.osmp.task.factory.IcosSystem;
+import cu.aotain.osmp.task.service.IcosSystemFileAnalyze;
+import cu.aotain.osmp.task.service.VerificationInfo;
+import cu.aotain.osmp.task.serviceapi.*;
+import cu.aotain.osmp.task.serviceapi.hystrix.UserBandWidthServiceApiHystrix;
+import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Required;
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.*;
+
+/**
+ * 描述:
+ * 客户带宽信息列表
+ *
+ * @author chenym@aotain.com
+ * @create 2018-08-24 16:34
+ */
+@Service
+public class IcosSystemPortListServiceImpl extends IcosSystemFileAnalyze implements IcosSystem {
+
+    private static final Logger LOG = LoggerFactory.getLogger(IcosSystemPortListServiceImpl.class);
+    private VerificationInfo info;
+
+    @Autowired
+    @Required
+    public void setInfo(VerificationInfo info) {
+        this.info = info;
+    }
+
+    @Override
+    public void execte(File file, HardFileMonitorJobForGD.FileWriter999 writer) {
+        super.writer = writer;
+        this.process(file);
+    }
+
+    @Override
+    public void postProcess(File file) {
+
+    }
+
+    @Override
+    public List<String> resolveAndValid(File file) {
+        if (file == null) {
+            return null;
+        }
+        LOG.info("start resolveAndValid file=" + file.getName());
+        List<String> contexts = FileUtils.readFileByLine(file);
+        List<String> contextLists = new ArrayList<>();
+        Integer count = 0;
+        if (contexts.size() > 0) {
+            for (int i = 0; i < contexts.size(); i++) {
+                String line = contexts.get(i);
+                count++;
+                // 表头skip掉。
+                if (i == 0) {
+                    continue;
+                }
+                String remarkLine = line + "," + file.getName() + "," + count;
+                String[] arr = line.split(",", line.length());
+                if (arr.length == 5) {
+                    contextLists.add(remarkLine);
+                } else {
+                    writeErrorLine(remarkLine);
+                    LOG.error(remarkLine);
+                }
+            }
+        }
+        contexts = null;
+        if (LOG.isDebugEnabled()) {
+            LOG.debug(" parse file=" + file.getName() + " finish,numbers=" + contextLists.size() + ",fileTotalLines=" + count);
+        }
+        return contextLists;
+    }
+
+    @Override
+    public void assemblyBean(List<String> list) {
+        LOG.info("start portList assemblyBean list.size()=" + list.size());
+        Map<String, String> currentLineMap = Maps.newHashMap();
+        Set databaseKeySet = new HashSet();
+        Map<String, UserBandwidthInformationDTO> database_map = Maps.newHashMap();
+        Set currentKeySet = new HashSet();
+        for (String line : list) {
+            String[] arr = line.split(",", line.length());
+            // CustomerName,AreaCode,CityCode,Banwidth,UseDate,etlfileName,fileRowsNumber
+            if (arr.length == 7) {
+                // 单位名称
+                String customerName = arr[0];
+                // 机房编码
+                String areaCode = arr[1];
+                String houseId = getHouseIdByAreaCode(areaCode);
+                String userId = getUserIdByUserName(customerName);
+                if (StringUtils.isEmpty(houseId) || StringUtils.isEmpty(userId)) {
+                    LOG.error("customerName=" + customerName + ",areaCode=" + areaCode + " ERROR line=" + line + ";because userId:" + userId + ",houseId:" + houseId);
+                    writeErrorLine(line);
+                }
+                String put_key = houseId + "_" + userId;
+                if (currentLineMap.containsKey(put_key)) {
+                    LOG.error("customerName=" + customerName + ",areaCode=" + areaCode + " ERROR line=" + line + ";because userId:" + userId + ",houseId:" + houseId + ";duplicate userId_houseId");
+                    writeErrorLine(line);
+                }
+                currentLineMap.put(put_key, line);
+            }
+        }
+        currentKeySet = currentLineMap.keySet();
+
+        /**
+         * 查询所有用户带宽信息
+         */
+        PageResult<UserBandwidthInformationDTO> databaseRecords = null;
+        UserBandWidthServiceApi serviceApi = BaseFeignBuilder.getCacheFeign(UserBandWidthServiceApi.class, "myclient", new UserBandWidthServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+
+        UserBandwidthInformationDTO dto = new UserBandwidthInformationDTO();
+        dto.setIsPaging(0);
+        databaseRecords = serviceApi.queryBandwidth(dto);
+        if (databaseRecords != null && databaseRecords.getRows().size() > 0) {
+            for (UserBandwidthInformationDTO m : databaseRecords.getRows()) {
+                database_map.put(m.getUserId() + "_" + m.getHouseId(), m);
+            }
+        }
+        databaseKeySet = database_map.keySet();
+
+
+        // 待插入的机房ip段, 文件中存在，数据库中不存在
+        List<String> preInsertRecordList = (List) CollectionUtils.subtract(currentKeySet, databaseKeySet);
+
+        // 待修改的机房ip段, 文件中存在，数据库中存在
+        List<String> preUpdateRecordList = (List) CollectionUtils.intersection(currentKeySet, databaseKeySet);
+
+        // 待删除的机房ip段, 文件中不存在，数据库中存在
+        List<String> predeleteRecordList = (List) CollectionUtils.subtract(databaseKeySet, currentKeySet);
+
+        /**
+         *  新增用户带宽信息
+         */
+        try {
+            if (preInsertRecordList != null && preInsertRecordList.size() > 0) {
+                Map<String, List<UserBandwidthInformationDTO>> pre_insertRecordMap = new HashMap<>();
+                UserBandwidthInformationDTO pre_model = null;
+                for (String currentKey : preInsertRecordList) {
+                    String iLine = currentLineMap.get(currentKey);
+
+                    // CustomerName,AreaCode,CityCode,Banwidth,UseDate,etlfileName,fileRowsNumber
+                    String[] arr = iLine.split(",", iLine.length());
+                    String customerName = arr[0];
+                    String areaCode = arr[1];
+                    pre_model = getPortListInfoByCsvLine(iLine);
+                    String insert_key = getUserIdByUserName(customerName) + "_" + getHouseIdByAreaCode(areaCode);
+
+                    if (pre_insertRecordMap.containsKey(insert_key)) {
+                        pre_insertRecordMap.get(insert_key).add(pre_model);
+                    } else {
+                        List<UserBandwidthInformationDTO> iList = new ArrayList<>();
+                        iList.add(pre_model);
+                        pre_insertRecordMap.put(insert_key, iList);
+                    }
+                }
+
+                for (Collection n : pre_insertRecordMap.values()) {
+                    List<UserBandwidthInformationDTO> lists = (List<UserBandwidthInformationDTO>) n;
+                    ResultDto result = serviceApi.insertBandwidth(lists);
+                    if (result.getResultCode() == 1) {
+                        LOG.error("insert into portList error");
+                        for (String key : result.getAjaxValidationResultMap().keySet()) {
+                            UserBandwidthInformationDTO u = lists.get(Integer.valueOf(key));
+                            String errorRecord = currentLineMap.get(u.getUserId() + "_" + u.getHouseId());
+                            writeErrorLine(errorRecord);
+                            LOG.error("insert into portList error,line=" + errorRecord + ",error=");
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+
+        /**
+         *  修改用户带宽信息
+         */
+        try {
+            if (preUpdateRecordList != null && preUpdateRecordList.size() > 0) {
+                List<UserBandwidthInformationDTO> userBandwidthInformationDTOs = new ArrayList<>();
+                UserBandwidthInformationDTO uModel = null;
+                for (String uRecord : preUpdateRecordList) {
+                    uModel = database_map.get(uRecord);
+                    String uLine = currentLineMap.get(uRecord);
+                    getUserBandWidthInfoByCsvLine(uLine, uModel);
+                    userBandwidthInformationDTOs.add(uModel);
+                }
+                ResultDto resultUpdate = null;
+                /**
+                 * TODO
+                 */
+                //      resultUpdate=    serviceApi.updateBandwidth();
+                if (resultUpdate.getResultCode() == 1) {
+                    LOG.error("update userBandWidth error");
+                    for (String key : resultUpdate.getAjaxValidationResultMap().keySet()) {
+                        UserBandwidthInformationDTO u = userBandwidthInformationDTOs.get(Integer.valueOf(key));
+                        String errorRecord = currentLineMap.get(u.getUserId() + "_" + u.getHouseId());
+                        writeErrorLine(errorRecord);
+                        LOG.error("update userBandWidth error,line=" + errorRecord);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+
+        /**
+         *  删除用户带宽信息
+         */
+        try {
+            if (predeleteRecordList != null && predeleteRecordList.size() > 0) {
+                List<UserBandwidthInformationDTO> userBandwidthInformationDTOs = new ArrayList<>();
+                UserBandwidthInformationDTO uModel = null;
+                for (String uHouseIpSeg : predeleteRecordList) {
+                    uModel = database_map.get(uHouseIpSeg);
+                    userBandwidthInformationDTOs.add(uModel);
+                }
+                ResultDto resultDelete = null;
+                //            resultDelete = serviceApi.deleteBandwidth();
+                if (resultDelete.getResultCode() == 1) {
+                    LOG.error("delete userBandWidth error=" + resultDelete);
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+        LOG.info("finish portList assemblyBean");
+    }
+
+    private void getUserBandWidthInfoByCsvLine(String uLine, UserBandwidthInformationDTO uModel) {
+        if (StringUtils.isEmpty(uLine)) {
+            return;
+        }
+        // CustomerName,AreaCode,CityCode,Banwidth,UseDate,etlfileName,fileRowsNumber
+        String[] arr = uLine.split(",", uLine.length());
+
+        String customerName = arr[0];
+        String areaCode = arr[1];
+        String cityCode = arr[2];
+        String BandWidth = arr[3];
+        String useDate = arr[4];
+        String etlFileName = arr[5];
+        String fileRowsNumber = arr[6];
+
+        String distributeTime = getDateTimeStringByUseDate(useDate);
+        String userId = getUserIdByUserName(customerName);
+        String houseId = getHouseIdByAreaCode(areaCode);
+
+        uModel.setDistributeTime(distributeTime);
+        uModel.setAreaCode(cityCode);
+        uModel.setHouseId(Long.valueOf(houseId));
+        uModel.setBandWidth(Long.parseLong(BandWidth));
+        uModel.setUpdateTime(new Date());
+        uModel.setUpdateUserId(-1);
+        uModel.setEtlFileName(etlFileName);
+        uModel.setFileRowsNumber(fileRowsNumber);
+        uModel.setUserId(Long.valueOf(userId));
+
+        List<String> userAuthHouseList = new ArrayList();
+        userAuthHouseList.add(houseId + "");
+        uModel.setUserAuthHouseList(userAuthHouseList);
+
+        List cityCodeLists = new ArrayList();
+        cityCodeLists.add(uModel.getAreaCode());
+        uModel.setCityCodeList(cityCodeLists);
+
+    }
+
+    /**
+     * 根据csv文件中的一行记录填充实体类
+     *
+     * @param iLine
+     * @return
+     */
+    private UserBandwidthInformationDTO getPortListInfoByCsvLine(String iLine) {
+        UserBandwidthInformationDTO model = null;
+        if (StringUtils.isEmpty(iLine)) {
+            return null;
+        }
+        // CustomerName,AreaCode,CityCode,Banwidth,UseDate,etlfileName,fileRowsNumber
+        String[] arr = iLine.split(",", iLine.length());
+
+        String customerName = arr[0];
+        String areaCode = arr[1];
+        String cityCode = arr[2];
+        String BandWidth = arr[3];
+        String useDate = arr[4];
+        String etlFileName = arr[5];
+        String fileRowsNumber = arr[6];
+
+        String distributeTime = getDateTimeStringByUseDate(useDate);
+        String userId = getUserIdByUserName(customerName);
+        String houseId = getHouseIdByAreaCode(areaCode);
+
+        model = new UserBandwidthInformationDTO();
+        model.setDistributeTime(distributeTime);
+        model.setAreaCode(cityCode);
+        model.setHouseId(Long.valueOf(houseId));
+        model.setBandWidth(Long.parseLong(BandWidth));
+        model.setCreateUserId(-1);
+        model.setEtlFileName(etlFileName);
+        model.setFileRowsNumber(fileRowsNumber);
+        model.setUserId(Long.valueOf(userId));
+
+        List<String> userAuthHouseList = new ArrayList();
+        userAuthHouseList.add(houseId + "");
+        model.setUserAuthHouseList(userAuthHouseList);
+
+        List cityCodeLists = new ArrayList();
+        cityCodeLists.add(model.getAreaCode());
+        model.setCityCodeList(cityCodeLists);
+
+        return model;
+
+    }
+
+    private String getDateTimeStringByUseDate(String useDate) {
+        String distributeTime;
+        try {
+            distributeTime = useDate.split(" ")[0];
+        } catch (Exception e) {
+            distributeTime = null;
+        }
+
+        if (distributeTime == null) {
+            try {
+                Date f = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss").parse(useDate);
+                distributeTime = new SimpleDateFormat("yyyy-MM-dd").format(f);
+            } catch (ParseException e) {
+                distributeTime = null;
+            }
+        }
+        return distributeTime;
+    }
+
+}

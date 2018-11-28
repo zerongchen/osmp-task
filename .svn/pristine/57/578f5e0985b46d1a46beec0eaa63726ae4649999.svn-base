@@ -1,0 +1,34 @@
+package cu.aotain.osmp.task.quartz;
+
+import com.aotain.common.config.ContextUtil;
+import com.aotain.common.utils.quartz.AbsQuartzJob;
+import com.aotain.common.utils.quartz.IQuartzJob;
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import cu.aotain.osmp.task.service.ipsegmanage.IpSegManageService;
+import cu.aotain.osmp.task.util.MyFileUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Map;
+
+/**
+ * Demo class
+ *
+ * @author bang
+ * @date 2018/08/30
+ */
+public class IpSegJob extends AbsQuartzJob {
+
+    private static final Logger logger = LoggerFactory.getLogger(IpSegJob.class);
+
+    @Override
+    public void run(IQuartzJob jobInfo) {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+        logger.info("start ip manage job at "+ sdf.format(new Date()));
+        IpSegManageService ipSegManageService = ContextUtil.getContext().getBean(IpSegManageService.class);
+        Map<String,ResultDto> resultDto = ipSegManageService.synchDb();
+        MyFileUtils.writeErrorFile(null,"error",resultDto);
+    }
+}

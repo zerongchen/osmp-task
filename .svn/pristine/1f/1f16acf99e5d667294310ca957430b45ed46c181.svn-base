@@ -1,0 +1,95 @@
+package cu.aotain.osmp.task;
+
+import com.aotain.common.utils.tools.EnvironmentUtils;
+import com.aotain.cu.serviceapi.dto.HouseIPSegmentInforDTO;
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.aotain.cu.serviceapi.utils.ServiceAddressSelector;
+import cu.aotain.osmp.task.service.HouseCacheService;
+import cu.aotain.osmp.task.service.IcosSystemService;
+import cu.aotain.osmp.task.serviceapi.HouseIpSegServiceApiHystrix;
+import cu.aotain.osmp.task.serviceapi.IHouseIpSegServiceApi;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApi;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApiHystrix;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+
+/**
+ * 描述:
+ *
+ * @author chenym@aotain.com
+ * @create 2018-08-30 14:15
+ */
+@RunWith(SpringJUnit4ClassRunner.class)
+@ContextConfiguration(locations = {"classpath:spring-osmp-task.xml"})
+public class TestUserInfo {
+
+    @Before
+    public void before() {
+        EnvironmentUtils.ConfigBuilder cb = new EnvironmentUtils.ConfigBuilder();
+        cb.append(EnvironmentUtils.WORK_PATH, ".");
+        cb.append(EnvironmentUtils.LOG4J_PATH, "config/log4j.properties");
+        cb.append(EnvironmentUtils.EVN_DIR, "osmp-task");
+        EnvironmentUtils.init(cb.build());
+        ServiceAddressSelector.init(EnvironmentUtils.loadPropertiesFromEnv("ribbon.properties"));
+    }
+
+    @Autowired
+    private IcosSystemService icosSystemService;
+
+
+    /**
+     * 查询用户信息
+     */
+    @Test
+    public void testQueryUserInfo() {
+
+        UserInfoServiceApi userInfoServiceApi = BaseFeignBuilder.getCacheFeign(UserInfoServiceApi.class, "myclient", new UserInfoServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+
+        UserInformationDTO dto = new UserInformationDTO();
+        dto.setIsPaging(0);
+        PageResult<UserInformationDTO> lists = userInfoServiceApi.getAllUser(dto);
+        System.out.println(lists);
+    }
+
+    /**
+     * 查询用户信息
+     */
+    @Test
+    public void testdeleteUserInfo() {
+
+        UserInfoServiceApi userInfoServiceApi = BaseFeignBuilder.getCacheFeign(UserInfoServiceApi.class, "myclient", new UserInfoServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+        List<UserInformationDTO> list = new ArrayList<>();
+        UserInformationDTO dto1 = new UserInformationDTO();
+        dto1.setUserId(30335L);
+        list.add(dto1);
+
+/*        UserInformationDTO dto2 = new UserInformationDTO();
+        dto2.setUserId(30332L);
+        list.add(dto2);
+
+        UserInformationDTO dto3 = new UserInformationDTO();
+        dto3.setUserId(30342L);
+        list.add(dto3);
+
+        UserInformationDTO dto4 = new UserInformationDTO();
+        dto4.setUserId(30335L);
+        list.add(dto4);*/
+
+        ResultDto lists = userInfoServiceApi.delete(list);
+        System.out.println(lists);
+    }
+
+
+}

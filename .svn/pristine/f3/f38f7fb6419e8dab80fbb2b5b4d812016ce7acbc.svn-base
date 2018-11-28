@@ -1,0 +1,58 @@
+package cu.aotain.osmp.task.serviceapi;
+
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import com.aotain.cu.serviceapi.dto.UserBandwidthInformationDTO;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.model.UserBandwidthInformation;
+import feign.RequestLine;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+
+import java.util.List;
+
+/**
+ * 描述:
+ *
+ * @author chenym@aotain.com
+ * @create 2018-08-29 16:10
+ */
+public interface UserBandWidthServiceApi {
+
+    /**
+     * 新增用户带宽信息
+     *
+     * @param bandwidths
+     * @return
+     */
+    @RequestLine("POST /serviceapi/pre/user/bandwidth/insert")
+    public ResultDto insertBandwidth(@RequestParam List<UserBandwidthInformationDTO> bandwidths);
+
+    /**
+     * 删除用户带宽信息
+     *
+     * @param bandwidthIds
+     * @return
+     */
+    @RequestLine("POST /serviceapi/pre/user/bandwidth/delete")
+    public ResultDto deleteBandwidth(@RequestParam List<Long> bandwidthIds);
+
+    /**
+     * 修改用户带宽信息
+     *
+     * @param bandwidth
+     * @return
+     */
+    @RequestLine("POST /serviceapi/pre/user/bandwidth/update")
+    public ResultDto updateBandwidth(@RequestBody UserBandwidthInformation bandwidth);
+
+    /**
+     * 查询用户带宽信息
+     *
+     * @param bandwidth
+     * @return
+     */
+    @RequestLine("POST /serviceapi/pre/user/bandwidth/query")
+    public PageResult<UserBandwidthInformationDTO> queryBandwidth(@RequestBody UserBandwidthInformationDTO bandwidth);
+
+
+}

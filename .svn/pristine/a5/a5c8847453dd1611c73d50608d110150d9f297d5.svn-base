@@ -1,0 +1,101 @@
+package cu.aotain.osmp.task.service;
+
+
+import com.aotain.common.utils.compress.zip.ZipDecompress;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Required;
+
+import java.io.File;
+import java.util.HashMap;
+import java.util.List;
+
+public abstract class IcosSystemFileAnalyze {
+
+    private static final Logger LOG = LoggerFactory.getLogger(IcosSystemFileAnalyze.class);
+
+    @Autowired
+    private ZipDecompress zipDecompress;
+    private VerificationInfo info;
+
+    @Autowired
+    @Required
+    public void setInfo(VerificationInfo info) {
+        this.info = info;
+    }
+
+    public void process(File file) {
+
+        String zipFileName = file.getAbsolutePath().replace("ok", "zip");
+        this.unZip(new File(zipFileName));
+        File dataFile = new File(file.getAbsolutePath().replaceAll("ok", "csv"));
+        this.postProcess(dataFile);
+        if (this.verification(dataFile)) {
+            List<String> contxts = resolveAndValid(dataFile);
+            this.assemblyBean(contxts);
+        }
+    }
+
+    /**
+     * 解压缩
+     */
+    public boolean unZip(File file) {
+        try {
+            if (file.exists()) {
+                zipDecompress.process(file, new File(file.getParent()));
+                if (new File(file.getAbsolutePath().replaceAll("ok", "csv")).exists()) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+        return false;
+    }
+
+    /**
+     *
+     */
+    public abstract void postProcess(File file);
+
+    /**
+     * 校验
+     */
+    public Boolean verification(File file) {
+        if (file == null || file.getName().contains("verification")) {
+            return false;
+        }
+        try {
+            if (info.getVerificationMap().containsKey("ICOS")) {
+                if ((Boolean) info.getVerificationMap().get("ICOS").get("verificationStatus")) {
+                    Long fileLength = file.length();
+                    String fileName = file.getName();
+                    HashMap<String, String> icos_map = (HashMap) info.getVerificationMap().get("ICOS").get("icos_map");
+                    if (icos_map.containsKey(fileName)) {
+                        String length = icos_map.get("fileName");
+                        if (length.equals(fileLength + "")) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * 解析并校验文件记录
+     */
+    public abstract List<String> resolveAndValid(File file);
+
+    /**
+     * 装配bean
+     */
+    public abstract void assemblyBean(List<String> list);
+
+
+}

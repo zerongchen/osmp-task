@@ -1,0 +1,6 @@
+#=======AbsHardFileMonitorJob configs
+engine.monitorDir=F:/monitor
+engine.monitorFileNameRegex=^verification_[\\d\\.-]+\\.csv\\.ok$
+engine.monitorFileNameSuffix=.ok
+engine.targetFileNameRegex=^.*\.csv.zip$
+engine.targetFileNameSuffix=.csv.zip

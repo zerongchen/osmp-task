@@ -1,0 +1,59 @@
+package cu.aotain.osmp.task.constant;
+
+import lombok.Getter;
+import lombok.Setter;
+
+public enum HouseAreaCodeEnum {
+
+    GZ("GZ", "DX-GZ-001-GZ", "电信广州机房", "广州市区域内所有IDC机房"),
+    SZ("SZ", "DX-SZ-001-SZ", "电信深圳机房", "深圳市区域内所有IDC机房"),
+    DG("DG", "dongguan_001", "电信东莞机房", "东莞市区域内所有IDC机房"),
+    FS("FS", "foshan_001", "电信佛山机房", "佛山市区域内所有IDC机房"),
+    SPTGZ("SPTGZ", "DX-GZ-002-RMZ", "省平台IDC广州节点", "汕头IDC、惠州IDC、云浮IDC、中山IDC、茂名IDC、韶关IDC"),
+    SPTSZ("SPTSZ", "DX-GZ-002-SPTSZ", "电信深圳亚森机房", "湛江IDC、揭阳IDC、肇庆IDC、河源IDC、江门IDC、汕尾IDC、清远IDC、梅州IDC、珠海IDC、潮州IDC、阳江IDC");
+
+    @Getter
+    @Setter
+    private String code;
+    @Getter
+    @Setter
+    private String houseidstr;
+    @Getter
+    @Setter
+    private String name;
+    @Getter
+    @Setter
+    private String desc;
+
+    public void setCode(String code) {
+        this.code = code;
+    }
+
+    public void setHouseidstr(String houseidstr) {
+        this.houseidstr = houseidstr;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public void setDesc(String desc) {
+        this.desc = desc;
+    }
+
+    HouseAreaCodeEnum(String code, String houseidstr, String name, String desc) {
+        this.code = code;
+        this.houseidstr = houseidstr;
+        this.name = name;
+        this.desc = desc;
+    }
+
+    public static HouseAreaCodeEnum getHouseidstrByCode(String code) {
+        for (HouseAreaCodeEnum m : values()) {
+            if (m.code.equals(code)) {
+                return m;
+            }
+        }
+        return null;
+    }
+}

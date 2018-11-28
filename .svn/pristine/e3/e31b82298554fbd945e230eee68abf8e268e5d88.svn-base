@@ -1,0 +1,125 @@
+package cu.aotain.osmp.task.core.common;
+
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.log4j.Logger;
+
+import com.aotain.common.utils.tools.FileUtils;
+
+/**
+ * 文件写入管理工具
+ * 
+ * @author liuz@aotian.com
+ * @date 2018年8月29日 下午7:58:01
+ */
+public class FileWriterManager {
+	public static Map<String, WriterBean> cacheMap = new HashMap<String, WriterBean>();
+	private static Logger logger = Logger.getLogger(FileWriterManager.class);
+
+	public static boolean addCacheItems(String key, String path, String charset) {
+		if (cacheMap.containsKey(key)) { // 重复时，使用原来的对象
+			logger.warn("cache key is existed , continue to use the old object : new file is " + path + ", old file is "
+					+ cacheMap.get(key).file.getAbsolutePath());
+			return true;
+		}
+		File file = new File(path);
+		if (file.exists() && file.isDirectory()) {
+			logger.error("cache file is directory " + path);
+			return false;
+		}
+
+		File pfile = file.getParentFile();
+
+		if (!pfile.exists()) {
+			boolean success = pfile.mkdirs();
+			if (!success) {
+				logger.error("create cache directory fail " + path);
+				return false;
+			}
+		}
+
+		try {
+			if (charset == null || "".equals(charset.trim())) {
+				charset = "UTF-8"; // 默认UTF-8
+			}
+			@SuppressWarnings("resource")
+			BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(file), charset));
+			WriterBean wb = new WriterBean();
+			wb.file = file;
+			wb.fw = writer;
+			cacheMap.put(key, wb);
+			return true;
+		} catch (IOException e) {
+			logger.error("FileWriter instance create fial  " + path, e);
+			return false;
+		}
+	}
+
+	public static BufferedWriter getWriter(String key) {
+		WriterBean wb = cacheMap.get(key);
+		if (wb == null) {
+			return null;
+		}
+		return wb.fw;
+	}
+
+	public static File getFile(String key) {
+		WriterBean wb = cacheMap.get(key);
+		if (wb == null) {
+			return null;
+		}
+		return wb.file;
+	}
+
+	public static void write(String key, String line) throws IOException {
+		WriterBean wb = cacheMap.get(key);
+		if (wb == null) {
+			throw new IOException("no FileWriter in cache");
+		}
+		wb.fw.write(line);
+		wb.fw.flush();
+	}
+
+	public static void write(String key, List<String> lines) throws IOException {
+		WriterBean wb = cacheMap.get(key);
+		if (wb == null) {
+			throw new IOException("no FileWriter in cache");
+		}
+
+		for (String line : lines) {
+			wb.fw.write(line);
+		}
+		wb.fw.flush();
+	}
+
+	public static void closeWriter(String key, String newFileName) {
+		WriterBean wb = cacheMap.get(key);
+		if (wb == null) {
+			return;
+		}
+		try {
+			wb.fw.close();
+		} catch (IOException e) {
+			logger.warn("file close failed : " + wb.file.getAbsolutePath(), e);
+		}
+		// 重命名
+		try {
+			FileUtils.renameFile(wb.file.getAbsolutePath(), wb.file.getParent() + File.separator + newFileName);
+		} catch (Exception e) {
+			logger.warn("fiel rename failed : old file is " + wb.file.getAbsolutePath() + ", new file name is "
+					+ newFileName, e);
+		}
+	}
+
+	private static class WriterBean {
+		private File file;
+		private BufferedWriter fw;
+	}
+}

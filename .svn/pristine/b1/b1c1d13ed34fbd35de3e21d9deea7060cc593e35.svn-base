@@ -1,0 +1,189 @@
+package cu.aotain.osmp.task.service;
+
+import com.aotain.common.config.ContextUtil;
+import com.aotain.common.config.LocalConfig;
+import com.aotain.common.config.redis.BaseRedisService;
+import com.aotain.common.utils.compress.zip.ZipDecompress;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserServiceInformationDTO;
+import com.aotain.cu.serviceapi.model.BaseModel;
+import com.aotain.cu.serviceapi.model.IdcJcdmXzqydm;
+import com.aotain.cu.serviceapi.model.UserInformation;
+import cu.aotain.osmp.task.util.HanLpUtil;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringEscapeUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import scala.util.parsing.combinator.testing.Str;
+
+import java.io.*;
+import java.util.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+
+public abstract class CrmsAndIpcFileHandle<T> {
+
+    private static Logger logger = LoggerFactory.getLogger(CrmsAndIpcFileHandle.class);
+
+    @Autowired
+    protected ZipDecompress zipDecompress;
+
+    @Autowired
+    protected VerificationInfo info;
+
+    /**
+     * 解析文件入口最终返回解析后的对象
+     * @return
+     */
+    public T returnHanderFile(List<File> files){
+        try {
+            Map<String,TreeMap<Long ,String >> content = this.process(files);
+            if (content!=null && content.size()>0){
+                return constructUserObj(content);
+            }
+        }catch (Exception e){
+            logger.error("parse file error ",e);
+        }
+        return null;
+    }
+
+    /**
+     * 核验文件
+     * @param content
+     * @param verFile
+     * @return
+     */
+    protected abstract boolean validate(Map<Long ,String> content,File verFile);
+
+
+    /**
+     * 解压
+     * @return
+     */
+    public File unZip(File zipFile) {
+        try {
+            ZipInputStream zis =  new ZipInputStream(new FileInputStream(zipFile));
+            ZipEntry entry = null;
+            BufferedOutputStream bos = null;
+            File target = null;
+            while((entry = zis.getNextEntry()) != null && !entry.isDirectory()) {
+                target = new File(zipFile.getParent(), entry.getName());
+                if (!target.getParentFile().exists()) {
+                    target.getParentFile().mkdirs();
+                }
+
+                bos = new BufferedOutputStream(new FileOutputStream(target));
+                byte[] buffer = new byte[10240];
+                int read;
+                while((read = zis.read(buffer, 0, buffer.length)) != -1) {
+                    bos.write(buffer, 0, read);
+                }
+
+                bos.flush();
+            }
+              return target;
+        } catch (Exception e) {
+            logger.error("", e);
+        }
+        return null;
+    }
+
+    /**
+     * ,读取核验文件信息放入缓存
+     * @param file
+     */
+    protected abstract void doVerifiyInfo(File file);
+
+
+    /**
+     * 解析CSV/txt文件
+     * @param files
+     */
+    protected abstract Map<String,TreeMap<Long ,String > > process( List<File> files );
+
+
+    /**
+     * 组装返回对象
+     * @param contents
+     * @return
+     */
+    protected abstract T constructUserObj(Map<String,TreeMap<Long,String>> contents);
+
+    /**
+     * 结束操作
+     */
+    protected abstract void end(String fileName);
+
+
+    /**
+     * 分词 获取地市和邮编
+     * @param hh
+     * @return
+     */
+    protected void setAreaCodeByAddress( BaseModel model, String hh){
+
+        HanLpUtil hanLpUtil = HanLpUtil.getInstance();
+        List<String> after = hanLpUtil.segArea(hh);
+
+        BaseRedisService<String,String,String> baseRedisService = ContextUtil.getContext().getBean(BaseRedisService.class);
+        List<Map<String,String>> result = new ArrayList<>();
+        Map<String,String> code;
+        for (String mc:after){
+            code = baseRedisService.getHashs("IDC_JCDM_XZQYDM:"+mc);
+            if (code!=null){
+                result.add(code);
+            }
+        }
+        if (result.isEmpty()) return;
+        if (model instanceof UserInformation) {
+            UserInformation information = (UserInformation)model;
+            for (Map<String, String> codeMap : result) {
+                if (codeMap.get("CODELEVEL") == "3") {
+                    information.setUnitAddressAreaCode(codeMap.get("CODE"));
+                    information.setUnitAddressAreaName(codeMap.get("MC"));
+                    information.setUnitZipCode(codeMap.get("POSTCODE"));
+                }
+                if (codeMap.get("CODELEVEL") == "1") {
+                    information.setUnitAddressProvinceCode(codeMap.get("CODE"));
+                    information.setUnitAddressProvinceName(codeMap.get("MC"));
+                    if (StringUtils.isEmpty(information.getUnitZipCode())) {
+                        information.setUnitZipCode(codeMap.get("POSTCODE"));
+                    }
+                }
+                if (codeMap.get("CODELEVEL") == "2") {
+                    information.setUnitAddressCityCode(codeMap.get("CODE"));
+                    information.setUnitAddressCityName(codeMap.get("MC"));
+                    if (StringUtils.isEmpty(information.getUnitZipCode())) {
+                        information.setUnitZipCode(codeMap.get("POSTCODE"));
+                    }
+                }
+            }
+        }else if( model instanceof UserServiceInformationDTO){
+            for (Map<String, String> codeMap : result) {
+                if (codeMap.get("CODELEVEL") == "1") {
+                    if (StringUtils.isEmpty(model.getAreaCode())){
+                        model.setAreaCode(codeMap.get("CODE"));
+                    }
+                }
+                if (codeMap.get("CODELEVEL") == "2") {
+                    model.setAreaCode(codeMap.get("CODE"));
+                }
+            }
+        }
+    }
+
+    /**
+     * 根据key去redis获取值
+     * @param key
+     * @param value
+     * @return
+     */
+    protected String getValueFormRedis(String key,String value){
+        BaseRedisService<String,String,String> baseRedisService = ContextUtil.getContext().getBean(BaseRedisService.class);
+        String result = baseRedisService.getHash(key+":"+value,"ID");
+        return result;
+    }
+
+}

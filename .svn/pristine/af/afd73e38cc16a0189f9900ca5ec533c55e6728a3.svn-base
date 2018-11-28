@@ -1,0 +1,350 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.alibaba.fastjson.JSON;
+import com.aotain.cu.serviceapi.dto.AjaxValidationResult;
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserServiceInformationDTO;
+import com.aotain.cu.serviceapi.model.IdcJcdmXzqydm;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.model.ServiceDomainInformation;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.csvreader.CsvReader;
+import cu.aotain.osmp.task.core.gd.HardFileMonitorJobForGD;
+import cu.aotain.osmp.task.service.CrmsAndIpcFileHandle;
+import cu.aotain.osmp.task.service.IcpProcessService;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApi;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApiHystrix;
+import cu.aotain.osmp.task.util.FileTools;
+import org.apache.commons.lang.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Service
+public class IcpProcessServiceImpl extends CrmsAndIpcFileHandle<Map<String,TreeMap<Long,UserServiceInformationDTO>>> implements IcpProcessService, BeanPostProcessor {
+
+    private static Logger logger = LoggerFactory.getLogger(IcpProcessServiceImpl.class);
+    private HardFileMonitorJobForGD.FileWriter999 wirter;
+    private Map<String,Boolean> booleanMap ;
+
+    @Override
+    protected boolean validate( Map<Long ,String> content, File verFile ) {
+        if (info.getVerificationMap().get("IPC").get(verFile.getName())!=null) {
+            if (content.size() == (int) info.getVerificationMap().get("IPC").get(verFile.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    protected void doVerifiyInfo( File file ) {
+        try {
+            // 创建CSV读对象
+            CsvReader csvReader = FileTools.createCsvReader(file);
+            // 读表头
+            csvReader.readHeaders();
+            HashMap<String,Object> map = new HashMap<String,Object>();
+            while (csvReader.readRecord()){
+                map.put( csvReader.get(0), Integer.parseInt(csvReader.get(1)));
+            }
+            info.getVerificationMap().put("IPC",map);
+            csvReader.close();
+        } catch (Exception e) {
+            logger.error("error get data from "+file.getName(),e);
+        }
+    }
+
+    @Override
+    protected Map<String,TreeMap<Long ,String > > process( List<File> files) {
+        Map<String,TreeMap<Long ,String >> map  = new HashMap<>();
+        for (File file:files){
+            File dataFile=null;
+            if ((dataFile=unZip(file))==null){
+                wirter.closeWriter(file.getName(), "34");
+                break;
+            }
+            CsvReader csvReader = FileTools.createCsvReader(dataFile);
+            TreeMap<Long,String> contentMap  = new TreeMap<>();
+            try {
+                csvReader.readHeaders();
+                Long rowNum=2l;
+                while (csvReader.readRecord()){
+                    contentMap.put(rowNum++,csvReader.getRawRecord());
+                }
+                if (validate(contentMap,file)){
+                    map.put(file.getName(),contentMap);
+                }else {
+                    wirter.closeWriter(file.getName(), "32");
+                }
+                csvReader.close();
+            } catch (IOException e) {
+                logger.error("",e);
+                wirter.closeWriter(file.getName(), "1");
+                return null;
+            }
+        }
+        return map;
+    }
+
+
+    @Override
+    protected Map<String,TreeMap<Long,UserServiceInformationDTO>> constructUserObj( Map<String, TreeMap<Long, String>> contents ) {
+
+        Map<String,TreeMap<Long,UserServiceInformationDTO>> userServices = new HashMap<String,TreeMap<Long,UserServiceInformationDTO>>();
+
+
+
+        contents.forEach((k,v)->{
+            TreeMap<Long,UserServiceInformationDTO> userDatas = new TreeMap<Long,UserServiceInformationDTO>();
+            v.forEach((rowNum,rowVaue)->{
+                try {
+                    String[] cont = rowVaue.split(",");
+                    UserServiceInformationDTO information = new UserServiceInformationDTO();
+                    //处理逻辑
+                    information.setUnitName(cont[1]);
+                    String uninature=null;
+                    if ((uninature=getValueFormRedis("IDC_JCDM_DWSX",cont[3]))!=null){
+                        information.setUnitNature(Integer.parseInt(uninature));
+                    }else {
+                        uninature=paramMap.getOrDefault("jcdm.dwsx."+cont[3],"999");
+                        information.setUnitNature(Integer.parseInt(uninature));
+                    }
+                    String idtype=null;
+                    if ((idtype=getValueFormRedis("IDC_JCDM_ZJLX",cont[6]))!=null){
+                        information.setIdType(Integer.parseInt(idtype));
+                    }else {
+                        idtype = paramMap.getOrDefault("jcdm.zjlx."+cont[6],"999");
+                        information.setIdType(Integer.parseInt(idtype));
+                    }
+                    information.setIdNumber(cont[7]);
+                    information.setRegisterId(cont[23]);
+                    if(!StringUtils.isEmpty(cont[24])){
+                        String[] sContents = cont[24].split(";");
+                        Set<String> serviceContents = new HashSet<>();
+                        for (String c:sContents){
+                            String id = getValueFormRedis("IDC_JCDM_FWNR",c);
+                            if (StringUtils.isEmpty(id)){
+                                id =paramMap.getOrDefault("jcdm.fwnr."+c,"504");
+                                serviceContents.add(id);
+                            }else {
+                                serviceContents.add(id);
+                            }
+                        }
+                        StringBuilder sb =new StringBuilder();
+                        for (String c:serviceContents){
+                            sb.append(c).append(",");
+                        }
+                        information.setServiceContent(sb.substring(0,sb.length()-1));
+                    }
+                    if (StringUtils.isEmpty(cont[23])){
+                        String[] domains = cont[23].split(";");
+                        List<ServiceDomainInformation> list = new ArrayList<>();
+                        for (String domain:domains){
+                            ServiceDomainInformation domainInformation = new ServiceDomainInformation();
+                            domainInformation.setDomainName(domain);
+                            list.add(domainInformation);
+                        }
+                        information.setDomainList(list);
+                    }
+                    String setmdoe;
+                    if ((setmdoe=getValueFormRedis("IDC_JCDM_JRFS",cont[34]))!=null){
+                        information.setSetmode(Integer.parseInt(setmdoe));
+                    }else {
+                        setmdoe = paramMap.getOrDefault("jcdm.jrfs."+cont[34],"999");
+                        information.setSetmode(Integer.parseInt(setmdoe));
+                    }
+                    setAreaCodeByAddress(information,cont[35]);
+                    if (areaMap.get(information.getAreaCode())!=null) {
+                        information.setAreaCode((String)areaMap.get(information.getAreaCode()));
+                    }else {
+                        information.setAreaCode("200");
+                    }
+                    information.setCityCodeList(Arrays.asList(information.getAreaCode()));
+                    information.setBusiness(1);//IDC
+                    information.setServiceType(1);//1-电信业务/对外应用服务
+                    information.setCreateUserId(-3);
+                    information.setUpdateUserId(-3);
+
+                    userDatas.put(rowNum,information);
+                }catch (Exception e){
+                    logger.error("parse txt param error",e);
+                    constructUserServiceErrorFile(k,rowNum,"参数解析有误");
+                }
+            });
+            userServices.put(k,userDatas);
+        });
+       return userServices;
+    }
+
+    private void constructUserServiceErrorFile( String fileName, Long rowNum, String msg ) {
+        if (booleanMap==null){
+            booleanMap = new ConcurrentHashMap<>();
+        }
+        wirter.append(fileName,"第"+rowNum+"行 "+msg+"\n");
+    }
+
+    @Override
+    protected void end(String fileName) {
+        if (booleanMap!=null && booleanMap.get(fileName)!=null && booleanMap.get(fileName)){
+            wirter.closeWriter(fileName,"1");
+            booleanMap.remove(fileName);
+        }else {
+            wirter.closeWriter(fileName,"0");
+        }
+    }
+
+    @Override
+    public void execute( File validateFile, List<File> dataFile , HardFileMonitorJobForGD.FileWriter999 wirter) {
+        this.wirter=wirter;
+        this.doVerifiyInfo(validateFile);
+        Map<String,TreeMap<Long,UserServiceInformationDTO>> userInfo = returnHanderFile(dataFile);
+        //get current data
+        if (userInfo!=null ) {
+            api = BaseFeignBuilder.getCacheFeign(UserInfoServiceApi.class, "myclient", new UserInfoServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+            UserInformationDTO user = new UserInformationDTO();
+            user.setIsPaging(0);
+            PageResult<UserInformationDTO> tableUsers = api.getAllUser(user);
+            Map<Integer,UserInformationDTO> userMap = new HashMap<>();
+            if (tableUsers!=null && !tableUsers.getRows().isEmpty()){
+                tableUsers.getRows().forEach(dto -> {
+                    userMap.put(dto.hashCode(),dto);
+                });
+            }else {
+                userInfo.forEach((fileName,fileValue)->{
+                    wirter.closeWriter(fileName,"1");
+                });
+                return;
+            }
+
+            UserServiceInformationDTO userparam= new UserServiceInformationDTO();
+            userparam.setIsPaging(0);
+            PageResult<UserServiceInformationDTO> userPageResult = api.getServices(userparam);
+
+            Map<String,UserServiceInformationDTO> userServiceMap = new HashMap<>();
+            if (userPageResult!=null && !userPageResult.getRows().isEmpty()){
+                List<UserServiceInformationDTO> tableResult = userPageResult.getRows();
+                tableResult.forEach(dto -> {
+                    userServiceMap.put(dto.getRegisterId(),dto);
+                });
+            }
+
+
+            List<UserServiceInformationDTO> commonUser = new ArrayList<>();
+            List<UserServiceInformationDTO> deleteUserServiceList = new ArrayList<>();
+
+                userInfo.forEach((fileName,fileValue)->{
+                    TreeMap<Long,UserServiceInformationDTO> addUserMap = new TreeMap<Long,UserServiceInformationDTO>();
+                    TreeMap<Long,UserServiceInformationDTO> modifyUserMap = new TreeMap<Long,UserServiceInformationDTO>();
+                    fileValue.forEach((rowNum,rowValue)->{
+                        UserInformationDTO dto=null;
+                        if ((dto=userMap.get(rowValue.UserHashCode()))!=null){
+                            UserServiceInformationDTO serviceInformationDTO=null;
+                            if ((serviceInformationDTO=userServiceMap.get(rowValue.getRegisterId()))!=null){
+                                rowValue.setUserId(dto.getUserId());
+                                rowValue.setServiceId(serviceInformationDTO.getServiceId());
+                                modifyUserMap.put(rowNum,rowValue);
+                                commonUser.add(serviceInformationDTO);
+                            }else {
+                                rowValue.setUserId(dto.getUserId());
+                                addUserMap.put(rowNum,rowValue);
+                            }
+                        } else {
+                            constructUserServiceErrorFile(fileName,rowNum,"找不到主体");
+                        }
+                    });
+                    insert(fileName,addUserMap);
+                    update(fileName,modifyUserMap);
+                    end(fileName);
+                });
+                deleteUserServiceList.addAll(userPageResult.getRows());
+                deleteUserServiceList.removeAll(commonUser);
+                delete(deleteUserServiceList);
+        }
+    }
+
+    private void insert(String fileName, TreeMap<Long,UserServiceInformationDTO> map){
+        if (map==null || map.isEmpty() || map.values()==null || map.values().isEmpty()) return;
+        try {
+            List<UserServiceInformationDTO> dtoList = new ArrayList<>();
+            Long row = 0l;
+            Map<Long,Long > rowMap = new HashMap<>();
+            for (Long key:map.keySet()){
+                dtoList.add(map.get(key));
+                rowMap.put(row++,key);
+            }
+            ResultDto resultDto = api.insertServices(dtoList);
+            if (resultDto.getResultCode()!=ResultDto.ResultCodeEnum.SUCCESS.getCode()){
+                Map<String, AjaxValidationResult> resultMap = resultDto.getAjaxValidationResultMap();
+                resultMap.forEach((k,v)->{
+                    Map<String, Object[]> error =  v.getErrorsArgsMap();
+                    if (error!=null && !error.isEmpty()){
+                        constructUserServiceErrorFile(fileName,rowMap.get(Long.valueOf(k)), JSON.toJSONString(error.values()));
+                    }
+                });
+            }
+        }catch (Exception e){
+            logger.error("insert service error",e);
+            wirter.closeWriter(fileName,"1");
+        }
+
+    }
+    private void update(String fileName, TreeMap<Long,UserServiceInformationDTO> map){
+        if (map==null || map.isEmpty() ||map.values()==null|| map.values().isEmpty()) return;
+        try {
+            List<UserServiceInformationDTO> dtoList = new ArrayList<>();
+            Long row = 0l;
+            Map<Long,Long > rowMap = new HashMap<>();
+            for (Long key:map.keySet()){
+                dtoList.add(map.get(key));
+                rowMap.put(row++,key);
+            }
+            ResultDto resultDto = api.updateServices(dtoList);
+            if (resultDto.getResultCode()!=ResultDto.ResultCodeEnum.SUCCESS.getCode()){
+                Map<String, AjaxValidationResult> resultMap = resultDto.getAjaxValidationResultMap();
+                resultMap.forEach((k,v)->{
+                    Map<String, Object[]> error =  v.getErrorsArgsMap();
+                    if (error!=null && !error.isEmpty()){
+                        constructUserServiceErrorFile(fileName,rowMap.get(Long.valueOf(k)),JSON.toJSONString(error.values()));
+                    }
+                });
+            }
+        }catch (Exception e){
+            logger.error("update service error",e);
+            wirter.closeWriter(fileName,"1");
+        }
+    }
+    private void delete(List<UserServiceInformationDTO> list){
+        api.deleteServices(list);
+    }
+
+    @Override
+    public Object postProcessBeforeInitialization( Object o, String s ) throws BeansException {
+        return o;
+    }
+
+    @Override
+    public Object postProcessAfterInitialization( Object o, String s ) throws BeansException {
+//        if (areaMap!=null && areaMap.get("areaCode")==null){
+//            if (api==null){
+//                api= BaseFeignBuilder.getCacheFeign(UserInfoServiceApi.class, "myclient", new UserInfoServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+//            }
+//            List<IdcJcdmXzqydm> areaList = api.getAreaCode(0);
+//            if (areaList!=null && !areaList.isEmpty()) {
+//                areaList.forEach(dm->{
+//                    areaMap.put(dm.getCode(),dm.getAreaCode());
+//                });
+//            }
+//            areaMap.put("areaCode","1");
+//        }
+        return o;
+    }
+}

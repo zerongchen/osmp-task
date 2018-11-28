@@ -1,0 +1,187 @@
+package cu.aotain.osmp.task.core.gd;
+
+import java.io.File;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.List;
+
+import com.aotain.common.config.ContextUtil;
+import cu.aotain.osmp.task.service.CrmsProcessService;
+import cu.aotain.osmp.task.service.IcosSystemService;
+import cu.aotain.osmp.task.service.IcpProcessService;
+import cu.aotain.osmp.task.service.impl.CrmsProcessServiceImpl;
+import cu.aotain.osmp.task.service.impl.IcpProcessServiceImpl;
+import org.apache.log4j.Logger;
+
+import cu.aotain.osmp.task.core.common.AbsHardFileMonitorJob;
+import cu.aotain.osmp.task.core.common.FileWriterManager;
+import cu.aotain.osmp.task.core.common.MonitorResult;
+
+/**
+ * 广东接口文件监听JOB实现
+ * 
+ * @author liuz@aotian.com
+ * @date 2018年8月29日 下午6:58:09
+ */
+public class HardFileMonitorJobForGD extends AbsHardFileMonitorJob {
+	private static Logger logger = Logger.getLogger(HardFileMonitorJobForGD.class);
+
+	@Override
+	public void dealFiles(MonitorResult monitorResult) {
+		List<String> dirs = monitorResult.getDirList();
+		String systemDirName = dirs.get(0);
+
+		String provinceCode = dirs.get(1);
+		String dataType = dirs.get(2); 			// 1-基础数据
+		String reportDate = dirs.get(3);	 	// 上报日期
+		if (!provinceCode.equals("440000")) {
+			logger.warn("skip invalid data - provinceCode is not for GD : " + monitorResult);
+			return;
+		}
+		if (!dataType.equals("1")) {
+			logger.warn("skip invalid data - dataType is nonsupport : " + monitorResult);
+			return;
+		}
+		SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+		String dateStr = sdf.format(new Date());
+		if (!reportDate.equals(dateStr)) {
+			logger.warn("skip invalid data - reportDate is not current date , current date is " + dateStr + ","
+					+ monitorResult);
+			return;
+		}
+
+		// 初始化999缓存文件
+		for (File file : monitorResult.getDataFileList()) {
+			String key = generateCacheKey(monitorResult, file.getName());
+			String path = generateCachePath(monitorResult, file.getName());
+			boolean success = FileWriterManager.addCacheItems(key, path, null);
+			if (!success) {
+				logger.error("create FileWriter to 999 fail : " + path);
+			}
+		}
+
+		FileWriter999 writer999 = new FileWriter999(monitorResult);
+
+		// ICP集团备案系统接口目录
+		if (systemDirName.equals("bsmp_icp")) {
+			logger.info("deal icp system files : " + monitorResult);
+			dealIcpFiles(monitorResult.getVerifyFile(), monitorResult.getDataFileList(), writer999);
+		}
+		// 客户关系管理系统（CRMS）接口目录
+		else if (systemDirName.equals("bsmp_crms")) {
+			logger.info("deal crms system files : " + monitorResult);
+			dealCrmsFiles(monitorResult.getVerifyFile(), monitorResult.getDataFileList(), writer999);
+		}
+		// 客户关系管理系统（CRMS）接口目录
+		else if (systemDirName.equals("bsmp_icos")) {
+			logger.info("deal ip system files : " + monitorResult);
+			dealIcosFiles(monitorResult.getVerifyFile(), monitorResult.getDataFileList(), writer999);
+		} else {
+			// 未知系统
+			logger.warn("unknown system interface dir : " + systemDirName);
+		}
+	}
+
+	private void dealIcpFiles(File verifiFile, List<File> dataFiles, FileWriter999 writer) {
+		// TODO:
+		logger.info("TODO: dealIcpFiles");
+		IcpProcessService im = (IcpProcessService)ContextUtil.getContext().getBean(IcpProcessServiceImpl.class);
+		im.execute(verifiFile,dataFiles,writer);
+	}
+
+	private void dealCrmsFiles(File verifiFile, List<File> dataFiles, FileWriter999 writer) {
+		// TODO:
+		logger.info("TODO: dealCrmsFiles");
+		CrmsProcessService im = ContextUtil.getContext().getBean(CrmsProcessServiceImpl.class);
+		im.execute(verifiFile,dataFiles,writer);
+	}
+
+	private void dealIcosFiles(File verifiFile, List<File> dataFiles, FileWriter999 writer) {
+/*		// TODO:
+		logger.info("TODO: dealIcosFiles");
+		// 写999样例
+		File file = dataFiles.get(0);
+		//writer.append(file.getName(), "this is a test error");
+		writer.closeWriter(file.getName(), "100");*/
+        IcosSystemService icosSystemService = ContextUtil.getContext().getBean("icosSystemServiceImp", IcosSystemService.class);
+        icosSystemService.observer(verifiFile, dataFiles, writer);
+	}
+
+	/**
+	 * 生成缓存key
+	 * 
+	 * @param mr
+	 * @param fileName
+	 * @return
+	 */
+	private static String generateCacheKey(MonitorResult mr, String fileName) {
+		return Integer.toHexString(mr.hashCode()) + "_" + fileName;
+	}
+
+	/**
+	 * 生成缓存路径
+	 * 
+	 * @param mr
+	 * @param fileName
+	 * @return
+	 */
+	private static String generateCachePath(MonitorResult mr, String fileName) {
+		String suffix = mr.getDataFileNameSuffix();
+		String fName = null;
+		if (suffix == null || "".equals(suffix)) {
+			fName = fileName.substring(0, fileName.lastIndexOf('.'));
+		} else {
+			fName = fileName.substring(0, fileName.length() - suffix.length());
+		}
+		// 【根目录】/【系统目录】/999/【文件名】
+		// 文件名格式：文件类型-源文件名（不带后缀）-处理结果码
+		return mr.getMonitorPath() + File.separator + mr.getDirList().get(0) + File.separator + "999" + File.separator
+				+ mr.getDirList().get(2) + "-" + fName;
+	}
+
+	/**
+	 * 999返回数据书写工具
+	 * 
+	 * @author liuz@aotian.com
+	 * @date 2018年8月30日 上午10:51:12
+	 */
+	public static class FileWriter999 {
+		private MonitorResult mr;
+
+		public FileWriter999(MonitorResult mr) {
+			this.mr = mr;
+		}
+
+		public void append(String fileName, List<String> lines) {
+			String key = generateCacheKey(mr, fileName);
+			try {
+				FileWriterManager.write(key, lines);
+			} catch (IOException e) {
+				logger.error("999 file write fail : path is " + FileWriterManager.getFile(key).getAbsolutePath());
+			}
+		}
+
+		public void append(String fileName, String line) {
+			String key = generateCacheKey(mr, fileName);
+			try {
+				FileWriterManager.write(key, line);
+			} catch (IOException e) {
+				logger.error("999 file write fail : path is " + FileWriterManager.getFile(key).getAbsolutePath());
+			}
+		}
+
+		/**
+		 * 999 书写结束，并给文件名追加处理结果吗
+		 * 
+		 * @param fileName
+		 * @param resultCode
+		 */
+		public void closeWriter(String fileName, String resultCode) {
+			String key = generateCacheKey(mr, fileName);
+			File file = FileWriterManager.getFile(key);
+			String newName = file.getName() + "-" + resultCode;
+			FileWriterManager.closeWriter(key, newName);
+		}
+	}
+}

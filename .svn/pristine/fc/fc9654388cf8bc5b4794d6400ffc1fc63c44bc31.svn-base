@@ -1,0 +1,323 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.aotain.common.utils.tools.FileUtils;
+import com.aotain.cu.serviceapi.dto.HouseFrameInformationDTO;
+import com.aotain.cu.serviceapi.dto.HouseIPSegmentInforDTO;
+import com.aotain.cu.serviceapi.dto.HouseInformationDTO;
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.google.common.collect.Maps;
+import cu.aotain.osmp.task.constant.HouseAreaCodeEnum;
+import cu.aotain.osmp.task.core.gd.HardFileMonitorJobForGD;
+import cu.aotain.osmp.task.factory.IcosSystem;
+import cu.aotain.osmp.task.service.HouseCacheService;
+import cu.aotain.osmp.task.service.IcosSystemFileAnalyze;
+import cu.aotain.osmp.task.service.VerificationInfo;
+import cu.aotain.osmp.task.serviceapi.HouseIpSegServiceApiHystrix;
+import cu.aotain.osmp.task.serviceapi.IHouseIpSegServiceApi;
+import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Required;
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+import java.text.SimpleDateFormat;
+import java.util.*;
+
+/**
+ * 描述:
+ * 机房IP地址信息列表
+ *
+ * @author chenym@aotain.com
+ * @create 2018-08-24 16:34
+ */
+@Service
+public class IcosSystemIpListServiceImpl extends IcosSystemFileAnalyze implements IcosSystem {
+    private static final Logger LOG = LoggerFactory.getLogger(IcosSystemIpListServiceImpl.class);
+    private VerificationInfo info;
+
+    @Autowired
+    @Required
+    public void setInfo(VerificationInfo info) {
+        this.info = info;
+    }
+
+
+    @Override
+    public void execte(File file, HardFileMonitorJobForGD.FileWriter999 writer) {
+        this.process(file);
+        super.writer=writer;
+    }
+
+
+    @Override
+    public void postProcess(File file) {
+
+    }
+
+    @Override
+    public List<String> resolveAndValid(File file) {
+
+        if (file == null) {
+            return null;
+        }
+        LOG.info("start resolveAndValid file=" + file.getName());
+        List<String> contexts = FileUtils.readFileByLine(file);
+        List<String> contextLists = new ArrayList<>();
+        Integer count = 0;
+        if (contexts.size() > 0) {
+            for (int i = 0; i < contexts.size(); i++) {
+                String line = contexts.get(i);
+                count++;
+                // 表头skip掉。
+                if (i == 0) {
+                    continue;
+                }
+                String remarkLine = line + "," + count;
+                String[] arr = line.split(",", line.length());
+                if (arr.length == 6) {
+                    contextLists.add(remarkLine);
+                } else {
+                    writeErrorLine(remarkLine);
+                    LOG.error(remarkLine);
+                }
+            }
+        }
+        contexts = null;
+        if (LOG.isDebugEnabled()) {
+            LOG.debug(" parse file=" + file.getName() + " finish,numbers=" + contextLists.size() + ",fileTotalLines=" + count);
+        }
+        return contextLists;
+    }
+
+    @Override
+    public void assemblyBean(List<String> list) {
+
+        LOG.info("start ipList assemblyBean list.size()=" + list.size());
+
+        Map<String, String> ipListLineMap = Maps.newHashMap();
+        Set databaseFrameNameSet = new HashSet();
+        Map<String, HouseIPSegmentInforDTO> database_map = Maps.newHashMap();
+
+        for (String line : list) {
+            String[] arr = line.split(",", line.length());
+            if (arr.length == 7) {
+                // 开始ip
+                String start_ip = arr[2];
+                // 结束ip
+                String end_ip = arr[3];
+
+                if (StringUtils.isEmpty(start_ip) || StringUtils.isEmpty(end_ip)) {
+                    writeErrorLine(line);
+                }
+                ipListLineMap.put(start_ip + "_" + end_ip, line);
+            }
+        }
+        Set currentFrameNameSet = ipListLineMap.keySet();
+        IHouseIpSegServiceApi ipSegServiceApi = BaseFeignBuilder.getCacheFeign(IHouseIpSegServiceApi.class, "myclient", new HouseIpSegServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+
+        HouseIPSegmentInforDTO dto = new HouseIPSegmentInforDTO();
+        dto.setIsPaging(0);
+        PageResult<HouseIPSegmentInforDTO> databaseRecords = ipSegServiceApi.queryIpSeg(dto);
+        if (databaseRecords != null && databaseRecords.getRows().size() > 0) {
+            for (HouseIPSegmentInforDTO m : databaseRecords.getRows()) {
+                database_map.put(m.getStartIP() + "_" + m.getEndIP(), m);
+            }
+        }
+        databaseFrameNameSet = database_map.keySet();
+        // 待插入的机房ip段, 文件中存在，数据库中不存在
+        List<String> preInsertHouseIpSeg = (List) CollectionUtils.subtract(currentFrameNameSet, databaseFrameNameSet);
+
+        // 待修改的机房ip段, 文件中存在，数据库中存在
+        List<String> preUpdateHouseIpSeg = (List) CollectionUtils.intersection(currentFrameNameSet, databaseFrameNameSet);
+
+        // 待删除的机房ip段, 文件中不存在，数据库中存在
+        List<String> predeleteHouseIpSeg = (List) CollectionUtils.subtract(databaseFrameNameSet, currentFrameNameSet);
+
+        /**
+         *  新增机房Ip地址段信息
+         */
+        try {
+            if (preInsertHouseIpSeg != null && preInsertHouseIpSeg.size() > 0) {
+                Map<String, List<HouseIPSegmentInforDTO>> pre_insertRecordMap = new HashMap<>();
+                HouseIPSegmentInforDTO pre_model = null;
+                for (String houseIpSeg : preInsertHouseIpSeg) {
+                    String iLine = ipListLineMap.get(houseIpSeg);
+                    String[] arr = iLine.split(",", iLine.length());
+                    String areaCode = arr[0];
+                    pre_model = getHouseIpSegInfoByCsvLine(iLine);
+
+                    if (pre_insertRecordMap.containsKey(areaCode)) {
+                        pre_insertRecordMap.get(areaCode).add(pre_model);
+                    } else {
+                        List<HouseIPSegmentInforDTO> HouseIPSegmentInforDTOs = new ArrayList<>();
+                        HouseIPSegmentInforDTOs.add(pre_model);
+                        pre_insertRecordMap.put(areaCode, HouseIPSegmentInforDTOs);
+                    }
+                }
+
+                for (Collection n : pre_insertRecordMap.values()) {
+                    List<HouseIPSegmentInforDTO> lists = (List<HouseIPSegmentInforDTO>) n;
+                    ResultDto result = ipSegServiceApi.insertData(lists);
+                    if (result.getResultCode() == 1) {
+                        LOG.error("insert into house_ipSeg error");
+
+                        for (String key : result.getAjaxValidationResultMap().keySet()) {
+                            HouseIPSegmentInforDTO u = lists.get(Integer.valueOf(key));
+                            String errorRecord = ipListLineMap.get(u.getStartIP() + "_" + u.getEndIP());
+                            writeErrorLine(errorRecord);
+                            LOG.error("insert into house_ipSeg error,line=" + errorRecord + ",error=");
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+
+        /**
+         *  修改机房Ip地址段信息
+         */
+        try {
+            if (preUpdateHouseIpSeg != null && preUpdateHouseIpSeg.size() > 0) {
+                List<HouseIPSegmentInforDTO> houseIPSegmentInforDTOs = new ArrayList<>();
+                HouseIPSegmentInforDTO uModel = null;
+                for (String uHouseIpSeg : preUpdateHouseIpSeg) {
+                    uModel = database_map.get(uHouseIpSeg);
+                    String uLine = ipListLineMap.get(uHouseIpSeg);
+                    getHouseIpSegInfoByCsvLine(uLine, uModel);
+
+                    houseIPSegmentInforDTOs.add(uModel);
+                }
+                ResultDto resultUpdate = ipSegServiceApi.updateData(houseIPSegmentInforDTOs);
+                if (resultUpdate.getResultCode() == 1) {
+                    LOG.error("update house_ipSeg error");
+                    for (String key : resultUpdate.getAjaxValidationResultMap().keySet()) {
+                        HouseIPSegmentInforDTO u = houseIPSegmentInforDTOs.get(Integer.valueOf(key));
+                        String errorRecord = ipListLineMap.get(u.getStartIP() + "_" + u.getEndIP());
+                        writeErrorLine(errorRecord);
+                        LOG.error("update house_ipSeg error,line=" + errorRecord + ",error=");
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+
+        /**
+         *  删除机房Ip地址段信息
+         */
+        try {
+            if (predeleteHouseIpSeg != null && predeleteHouseIpSeg.size() > 0) {
+                List<HouseIPSegmentInforDTO> houseIPSegmentInforDTOs = new ArrayList<>();
+                HouseIPSegmentInforDTO uModel = null;
+                for (String uHouseIpSeg : predeleteHouseIpSeg) {
+                    uModel = database_map.get(uHouseIpSeg);
+                    houseIPSegmentInforDTOs.add(uModel);
+                }
+                ResultDto resultDelete = ipSegServiceApi.deleteData(houseIPSegmentInforDTOs);
+                if (resultDelete.getResultCode() == 1) {
+                    LOG.error("delete house_ipSeg error=" + resultDelete);
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+
+        LOG.info("finish ipList assemblyBean");
+    }
+
+    /**
+     * @param iLine
+     * @return
+     */
+    private HouseIPSegmentInforDTO getHouseIpSegInfoByCsvLine(String iLine) {
+        HouseIPSegmentInforDTO pre_model;
+        String[] arr = iLine.split(",", iLine.length());
+        //机房编码
+        String areaCode = arr[0];
+        String cityCode = arr[1];
+        String startIP = arr[2];
+        String endIP = arr[3];
+        String customerName = arr[4];
+        String useDate = arr[5];
+        //机房编码
+        HouseAreaCodeEnum e = HouseAreaCodeEnum.getHouseidstrByCode(areaCode);
+        if (e == null) {
+            LOG.error("areaCode=" + areaCode + ",get HouseAreaCodeEnum is NULL");
+            return null;
+        }
+        String houseidstr = e.getHouseidstr();
+        //机房信息
+        HouseInformationDTO n = houseCacheService.getHouseInfo(houseidstr);
+
+        if (n == null || n.getHouseId() == 0) {
+            LOG.error(houseidstr + " get houseid from database is null");
+            return null;
+        }
+
+        pre_model = new HouseIPSegmentInforDTO();
+        pre_model.setHouseId(n.getHouseId());
+        pre_model.setStartIP(startIP);
+        pre_model.setEndIP(endIP);
+        pre_model.setAreaCode(cityCode);
+        pre_model.setUseTime(StringUtils.isEmpty(useDate) ? new SimpleDateFormat("yyyy-MM-dd").format(new Date()) : useDate);
+        pre_model.setIpType(0);
+        pre_model.setCreateUserId(-1);
+        pre_model.setUserName(customerName);
+
+        List cityCodeLists = new ArrayList();
+        cityCodeLists.add(pre_model.getAreaCode());
+        pre_model.setCityCodeList(cityCodeLists);
+        return pre_model;
+    }
+
+    /**
+     * @param iLine
+     * @return
+     */
+    private void getHouseIpSegInfoByCsvLine(String iLine, HouseIPSegmentInforDTO uModel) {
+        String[] arr = iLine.split(",", iLine.length());
+        //机房编码
+        String areaCode = arr[0];
+        String cityCode = arr[1];
+        String startIP = arr[2];
+        String endIP = arr[3];
+        String customerName = arr[4];
+        String useDate = arr[5];
+        //机房编码
+        HouseAreaCodeEnum e = HouseAreaCodeEnum.getHouseidstrByCode(areaCode);
+        if (e == null) {
+            LOG.error("areaCode=" + areaCode + ",get HouseAreaCodeEnum is NULL");
+            return;
+        }
+        String houseidstr = e.getHouseidstr();
+        //机房信息
+        HouseInformationDTO n = houseCacheService.getHouseInfo(houseidstr);
+
+        if (n == null || n.getHouseId() == 0) {
+            LOG.error(houseidstr + " get houseid from database is null");
+            return;
+        }
+
+        uModel.setHouseId(n.getHouseId());
+        uModel.setStartIP(startIP);
+        uModel.setEndIP(endIP);
+        uModel.setAreaCode(cityCode);
+        uModel.setUseTime(StringUtils.isEmpty(useDate) ? new SimpleDateFormat("yyyy-MM-dd").format(new Date()) : useDate);
+        uModel.setIpType(0);
+        uModel.setUserName(customerName);
+        uModel.setUpdateUserId(-1);
+        uModel.setUpdateTime(new Date());
+
+        List cityCodeLists = new ArrayList();
+        cityCodeLists.add(uModel.getAreaCode());
+        uModel.setCityCodeList(cityCodeLists);
+    }
+
+
+}

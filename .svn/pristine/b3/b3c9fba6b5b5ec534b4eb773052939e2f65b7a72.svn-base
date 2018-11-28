@@ -1,0 +1,3 @@
+quartz.jobs=ipsegjob
+quartz.jobs.ipsegjob.class=cu.aotain.osmp.task.quartz.IpSegJob
+quartz.jobs.ipsegjob.cron=* 5 16 * * ?

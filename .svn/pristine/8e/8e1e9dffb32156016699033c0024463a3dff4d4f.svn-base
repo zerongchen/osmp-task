@@ -1,0 +1,21 @@
+package cu.aotain.osmp.task.serviceapi;
+
+import com.aotain.cu.serviceapi.dto.HouseFrameInformationDTO;
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.model.UserInformation;
+import feign.Headers;
+import feign.RequestLine;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+
+@Headers({"Content-Type: application/json", "Accept: application/json"})
+public interface RackServiceApi {
+
+    @RequestLine("POST /serviceapi/pre/house/rack/query")
+    public PageResult<HouseFrameInformationDTO> queryRack(@RequestParam HouseFrameInformationDTO rack);
+
+}
+
+

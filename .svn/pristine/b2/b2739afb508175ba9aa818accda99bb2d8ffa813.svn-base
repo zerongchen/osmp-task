@@ -1,0 +1,167 @@
+package cu.aotain.osmp.task.service;
+
+import com.aotain.common.utils.compress.zip.ZipDecompress;
+import org.apache.commons.io.FilenameUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+
+import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+public abstract class CrmsAndIpcFileHandle<T> {
+
+    private static Logger logger = LoggerFactory.getLogger(CrmsAndIpcFileHandle.class);
+
+    @Autowired
+    protected ZipDecompress zipDecompress;
+
+    @Autowired
+    protected VerificationInfo info;
+
+    public T returnHanderFile(){
+        try {
+            if (initParam()){
+                Map<String,List<String>> content = this.process(getValue("dataPath"));
+                if (content!=null && content.size()>0){
+                    return constructUserObj(content);
+                }
+            }
+        }catch (Exception e){
+            logger.error("parse crms file error ",e);
+        }
+        return null;
+    }
+
+    protected abstract boolean validate(List<String> content,File verFile);
+
+    private boolean initParam(){
+        //数据路径
+//      String dataPath = LocalConfig.getInstance().getHashValueByHashKey("data.crms.path");
+        String dataPath = "E:\\svn\\CU_OSMP\\bsmp_crms\\";
+        if (!dataPath.endsWith(File.separator)){
+            dataPath = dataPath+File.separator;
+        }
+        String type=returnType();
+        String dataBack = dataPath.replace(type,type+"_bck");
+        String dataError = dataPath.replace(type,type+"_error");
+        setValue("dataPath",dataPath);
+        setValue("dataBack",dataBack);
+        setValue("dataError",dataError);
+        return unZip();
+    }
+
+
+    public boolean unZip() {
+
+        List<File> files;
+        try {
+            File folder = new File(getValue("dataPath"));
+            File[] templates = folder.listFiles(new FilenameFilter() {
+                @Override
+                public boolean accept(File dir, String name) {
+                    if (name.startsWith("verification_")) {
+                        return true;
+                    }
+                    return false;
+                }
+            });
+
+            if (templates.length<1) return false;
+            doVerifiyInfo(templates[0]);
+            if ((files=getOkFile())!=null && !files.isEmpty()){
+                for (File zipFile:files){
+                    zipDecompress.process(zipFile,new File(zipFile.getParent()));
+                }
+                return true;
+            }
+        } catch (Exception e) {
+            logger.error("", e);
+        }
+        return false;
+    }
+
+    private List<File> getOkFile(){
+
+        File folder = new File(getValue("dataPath"));
+        File[] templates = folder.listFiles(new FilenameFilter() {
+            @Override
+            public boolean accept(File dir, String name) {
+                if ("ok".equals(FilenameUtils.getExtension(name))) {
+                    return true;
+                }
+                return false;
+            }
+        });
+        if (templates.length<1) return null;
+
+        List<File> files = new ArrayList<>();
+        File zipFile;
+        for (File file:templates){
+            if ((zipFile=new File(file.getAbsolutePath().replaceAll("ok", "zip"))).exists()) {
+                files.add(zipFile);
+           }
+         }
+        return files;
+    }
+
+    protected abstract void doVerifiyInfo(File file);
+    /**
+     * 备份文件
+     */
+    protected void backFile(File file){
+            file.renameTo(new File(getValue("dataBack") + file.getName()));
+    }
+
+    /**
+     * 备份错误文件
+     */
+    protected void backErrorFile(File file){
+            file.renameTo(new File(getValue("dataError") + file.getName()));
+    }
+
+    protected boolean clearFile(String path){
+        File file = new File(path);
+        if(!file.exists()){//判断是否待删除目录是否存在
+            System.err.println("The dir are not exists!");
+            return false;
+        }
+
+        String[] content = file.list();//取得当前目录下所有文件和文件夹
+        for(String name : content){
+            File temp = new File(path, name);
+            if(temp.isDirectory()){//判断是否是目录
+                clearFile(temp.getAbsolutePath());//递归调用，删除目录里的内容
+                temp.delete();//删除空目录
+            }else{
+                if(!temp.delete()){//直接删除文件
+                    logger.error("Failed to delete " + name);
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 解析CSV/txt文件
+     * @param dataPath
+     */
+    protected abstract Map<String,List<String>> process( String dataPath );
+
+    /**
+     * 系统类型
+     * @return
+     */
+    protected abstract String returnType();
+
+
+    protected abstract void setValue(String k,String v);
+
+    protected abstract String getValue(String k);
+
+    protected abstract T constructUserObj(Map<String,List<String>> contents);
+
+
+}

@@ -1,0 +1,42 @@
+package cu.aotain.osmp.task.service;
+
+import com.aotain.cu.serviceapi.dto.HouseInformationDTO;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import cu.aotain.osmp.task.serviceapi.HouseRackServiceApi;
+import cu.aotain.osmp.task.serviceapi.hystrix.HouseRackServiceApiHystrix;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Service;
+
+/**
+ * 描述:
+ *
+ * @author chenym@aotain.com
+ * @create 2018-08-28 14:17
+ */
+@Service
+public class HouseCacheService {
+
+    @Cacheable("houseinfos")
+    public HouseInformationDTO getHouseInfo(String houseIdstr) {
+
+        return getHouseInfoFromDb(houseIdstr);
+    }
+
+    public HouseInformationDTO getHouseInfoFromDb(String houseIdstr) {
+        HouseRackServiceApi idemo = BaseFeignBuilder.getCacheFeign(HouseRackServiceApi.class, "myclient", new HouseRackServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+        HouseInformationDTO dto = new HouseInformationDTO();
+        dto.setIsPaging(0);
+
+        PageResult<HouseInformationDTO> lists = idemo.listHouseInfo(dto);
+        if (lists != null && lists.getRows().size() > 0) {
+            for (HouseInformationDTO model : lists.getRows()) {
+                if (model.getHouseIdStr().equals(houseIdstr)) {
+                    return model;
+                }
+            }
+        }
+        return null;
+    }
+
+}

@@ -1,0 +1,204 @@
+package cu.aotain.osmp.task.service.ipsegmanage.impl;
+
+import com.alibaba.fastjson.JSON;
+import com.aotain.common.utils.tools.Tools;
+import com.aotain.common.utils.tools.XmlUtils;
+import com.aotain.cu.serviceapi.model.HouseIPSegmentInformation;
+import com.google.common.collect.Lists;
+import cu.aotain.osmp.task.model.Inetnum;
+import cu.aotain.osmp.task.model.Ipv6Inetnum;
+import cu.aotain.osmp.task.model.Ipv6ReqQuery;
+import cu.aotain.osmp.task.model.Ipv6RespQuery;
+import cu.aotain.osmp.task.service.ipsegmanage.IWebServiceQuery;
+import cu.aotain.osmp.task.service.ipsegmanage.Ipv6SegService;
+import org.apache.commons.lang.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.math.BigInteger;
+import java.util.Date;
+import java.util.List;
+
+/**
+ * Demo class
+ *
+ * @author bang
+ * @date 2018/08/28
+ */
+@Service
+public class Ipv6SegServiceImpl implements Ipv6SegService{
+
+    @Autowired
+    private IWebServiceQuery iWebServiceQuery;
+
+    private static final BigInteger MAX_LENGTH = new BigInteger("2000");
+    private static final int SUCCESS_CODE = 0;
+
+    private static final Logger logger = LoggerFactory.getLogger(Ipv6SegServiceImpl.class);
+
+    @Override
+    public List<HouseIPSegmentInformation> ipv6QueryResult() {
+        List<Ipv6Inetnum> inetnumList = getWebServiceCallBackData();
+        if (inetnumList.isEmpty()){
+            return null;
+        }
+        List<HouseIPSegmentInformation> ipSegmentInformationList = Lists.newArrayList();
+        inetnumList.forEach(item -> {
+            HouseIPSegmentInformation houseIPSegmentInformation = generateBeanByIpv6Inetnum(item);
+            ipSegmentInformationList.add(houseIPSegmentInformation);
+        });
+        return ipSegmentInformationList;
+    }
+
+    @Override
+    public List<Ipv6Inetnum> getWebServiceCallBackData() {
+        List<Ipv6ReqQuery> reqQuery = generatorQueryParam();
+        return getResultData(reqQuery);
+    }
+
+    // 单次查询可能返回多个结果,即结果为list(可能需要拆分查询)
+    @Override
+    public List<Ipv6RespQuery> getResultData(Ipv6ReqQuery ipv6ReqQuery) {
+        List<Ipv6ReqQuery> ipv6ReqQueryList = getSatisfiedQueryParam(ipv6ReqQuery);
+        if (ipv6ReqQueryList.isEmpty()){
+            logger.info("search param is not valid",JSON.toJSONString(ipv6ReqQuery));
+            return null;
+        }
+        // 返回的结果集
+        List<Ipv6RespQuery> respQueryList = Lists.newArrayList();
+
+        ipv6ReqQueryList.forEach(item->{
+            try{
+                String resXmlStream = iWebServiceQuery.ipv6Query(XmlUtils.toXmlString(item));
+                if (StringUtils.isEmpty(resXmlStream)){
+                    logger.info("search result is null");
+                }
+                InputStream inputStream   =   new ByteArrayInputStream(resXmlStream.getBytes("UTF-8"));
+                Ipv6RespQuery respQuery = XmlUtils.createBean(inputStream,Ipv6RespQuery.class);
+                respQueryList.add(respQuery);
+            } catch (Exception e){
+                logger.error("query error..."+e,JSON.toJSONString(ipv6ReqQuery));
+            }
+
+        });
+
+        return respQueryList;
+    }
+
+    @Override
+    public List<Ipv6Inetnum> getResultData(List<Ipv6ReqQuery> ipv6ReqQueryList) {
+        if (ipv6ReqQueryList.isEmpty()){
+            logger.info("can not find startIp and endIp in db,so it is no need to call the webservice");
+            return null;
+        }
+        List<Ipv6Inetnum> result = Lists.newArrayList();
+        ipv6ReqQueryList.forEach(item->{
+            List<Ipv6RespQuery> respQueryList = getResultData(item);
+            respQueryList.forEach(respQuery -> {
+                if (respQuery.getRetResult().getRetCode().intValue()==SUCCESS_CODE){
+                    result.addAll(respQuery.getIpv6Inetnum());
+                }
+            });
+        });
+        return result;
+    }
+
+    /**
+     * 生成webService查询条件
+     */
+    private List<Ipv6ReqQuery> generatorQueryParam() {
+        List<Ipv6ReqQuery> reqQuery = Lists.newArrayList();
+        return reqQuery;
+    }
+
+    /**
+     * 根据查询条件确定查询次数(超过2000需要拆分为多次查询)
+     * @param reqQuery
+     * @return
+     */
+    private static List<Ipv6ReqQuery> getSatisfiedQueryParam(Ipv6ReqQuery reqQuery){
+        if (reqQuery.getInetnum()==null){
+            logger.info("the query param of inetnum can not be null", JSON.toJSONString(reqQuery));
+            return null;
+        }
+        Inetnum inetnum = (Inetnum) reqQuery.getInetnum();
+        Inetnum.BasicInfo basicInfo = inetnum.getBasicInfo();
+        if (StringUtils.isEmpty(basicInfo.getStartIp())){
+            logger.info("the query param of startIp can not be null", JSON.toJSONString(reqQuery));
+            return null;
+        }
+        if (StringUtils.isEmpty(basicInfo.getEndIp())){
+            logger.info("the query param of endIp can not be null", JSON.toJSONString(reqQuery));
+            return null;
+        }
+        if (!Tools.isIpV6Address(basicInfo.getStartIp())){
+            logger.info("the startIp is an invalid ipv6 address", JSON.toJSONString(reqQuery));
+            return null;
+        }
+        if (!Tools.isIpV6Address(basicInfo.getEndIp())){
+            logger.info("the endIp is an invalid ipv6 address", JSON.toJSONString(reqQuery));
+            return null;
+        }
+
+
+        BigInteger start = Tools.ipv6toInt(basicInfo.getStartIp());
+        BigInteger end = Tools.ipv6toInt(basicInfo.getEndIp());
+        List<Ipv6ReqQuery> reqQueryList = Lists.newArrayList();
+        // 起始和结束ip超过2000
+        while(end.subtract(start).subtract(MAX_LENGTH).signum()==1) {
+            Ipv6ReqQuery ipv6ReqQuery = new Ipv6ReqQuery();
+            Inetnum inetnum1 = new Inetnum();
+            Inetnum.BasicInfo basicInfo1 = new Inetnum.BasicInfo();
+            basicInfo1.setStartIp(Tools.int2ipv6(start));
+            start = new BigInteger(start.add(MAX_LENGTH).toString());
+            basicInfo.setStartIp(Tools.int2ipv6(start));
+            basicInfo1.setEndIp(Tools.int2ipv6(start));
+            inetnum1.setBasicInfo(basicInfo1);
+            ipv6ReqQuery.setInetnum(inetnum1);
+            reqQueryList.add(ipv6ReqQuery);
+        }
+
+        Inetnum inetnum1 = new Inetnum();
+        Inetnum.BasicInfo basicInfo1 = new Inetnum.BasicInfo();
+        basicInfo1.setStartIp(Tools.int2ipv6(start));
+        basicInfo1.setEndIp(Tools.int2ipv6(end));
+        inetnum1.setBasicInfo(basicInfo1);
+        reqQuery.setInetnum(inetnum1);
+        reqQueryList.add(reqQuery);
+        return reqQueryList;
+    }
+
+    private HouseIPSegmentInformation generateBeanByIpv6Inetnum(Ipv6Inetnum ipv6Inetnum){
+        HouseIPSegmentInformation houseIPSegmentInformation = new HouseIPSegmentInformation();
+        houseIPSegmentInformation.setStartIP(
+                ipv6Inetnum.getAllocatedInfo().getInetnum().getBasicInfo().getStartIp());
+        houseIPSegmentInformation.setEndIP(
+                ipv6Inetnum.getAllocatedInfo().getInetnum().getBasicInfo().getEndIp());
+        houseIPSegmentInformation.setIpType(3);
+        houseIPSegmentInformation.setUserName(ipv6Inetnum.getUseInfo().getUserSubject());
+        houseIPSegmentInformation.setUseTime((String)ipv6Inetnum.getUseInfo().getRealUseDate());
+        houseIPSegmentInformation.setIdType(ipv6Inetnum.getBackInfo().getSydwzjlx());
+        houseIPSegmentInformation.setIdNumber(ipv6Inetnum.getBackInfo().getSydwzjhm());
+        houseIPSegmentInformation.setAreaCode(ipv6Inetnum.getBackInfo().getShiid()+"");
+        return houseIPSegmentInformation;
+    }
+
+    public static void main(String[] args) {
+        Ipv6ReqQuery ipv6ReqQuery = new Ipv6ReqQuery();
+        Inetnum inetnum = new Inetnum();
+        Inetnum.BasicInfo basicInfo = new Inetnum.BasicInfo();
+        basicInfo.setStartIp("AD80:0000:0000:0000:ABAA:0000:00C2:0002");
+        basicInfo.setEndIp("AD80:0000:0000:0000:ABAA:0000:00C2:1002");
+        inetnum.setBasicInfo(basicInfo);
+        ipv6ReqQuery.setInetnum(inetnum);
+        List<Ipv6ReqQuery> ipv6ReqQueryList = getSatisfiedQueryParam(ipv6ReqQuery);
+        System.out.println("=======");
+//        BigInteger integer1 = new BigInteger("11");
+//        integer1 = integer1.add(new BigInteger("22"));
+//        System.out.println(integer1);
+    }
+}

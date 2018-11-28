@@ -1,0 +1,502 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.alibaba.fastjson.JSON;
+import com.aotain.common.utils.tools.MultifileWriter;
+import com.aotain.cu.serviceapi.dto.AjaxValidationResult;
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import com.aotain.cu.serviceapi.dto.UserBandwidthInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.csvreader.CsvReader;
+import cu.aotain.osmp.task.service.CrmsAndIpcFileHandle;
+import cu.aotain.osmp.task.service.ProcessService;
+import cu.aotain.osmp.task.service.UserInfo;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApi;
+import cu.aotain.osmp.task.serviceapi.UserInfoServiceApiHystrix;
+import cu.aotain.osmp.task.util.FileTools;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.lang.CharEncoding;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import java.io.*;
+import java.util.*;
+
+@Service
+public class CrmsProcessServiceImpl extends CrmsAndIpcFileHandle<UserInfo> implements ProcessService {
+
+    private static Map<String ,String > paramMap =new HashMap<>();
+    private static Logger logger = LoggerFactory.getLogger(CrmsProcessServiceImpl.class);
+    private Map<String,Map<Long,String>> errorMap;
+    private Map<String,Map<Long,String>> errorHHMap;
+    private UserInfoServiceApi api ;
+
+    @Override
+    public Map<String,TreeMap<Long,String >> process( String path ) {
+
+
+        File folder = new File(path);
+        File[] templates = folder.listFiles(new FilenameFilter() {
+            @Override
+            public boolean accept(File dir, String name) {
+                if ("txt".equals(FilenameUtils.getExtension(name)) && FilenameUtils.getBaseName(name).length()==17) {
+                    return true;
+                }
+                return false;
+            }
+        });
+        if (templates.length<1) return null;
+        InputStream input;
+        Map<String,TreeMap<Long,String>> contentMap  = new HashMap<String,TreeMap<Long,String>>();
+        for (File file:templates){
+            try {
+                TreeMap<Long,String> sigleContent  =new TreeMap<>();
+                input = new BufferedInputStream(new FileInputStream(file));
+                InputStreamReader read = new InputStreamReader( input, CharEncoding.UTF_8);
+                BufferedReader bufferedReader = new BufferedReader(read);
+                String lineTXT = null;
+                Long num=1l;
+                while ((lineTXT = bufferedReader.readLine()) != null) {
+                    sigleContent.put(num++,lineTXT.toString());
+                }
+                input.close();
+                if (validate(sigleContent,file)){
+                    //通过,备份
+                    backFile(file);
+                    contentMap.put(file.getName(),sigleContent);
+                }else {
+                    backErrorFile(file);
+                }
+            } catch (FileNotFoundException e) {
+                logger.error("",e);
+            }catch (UnsupportedEncodingException e) {
+                logger.error("parse file error ["+file.getName()+"]",e);
+            } catch (IOException e) {
+                logger.error("read txt file error ["+file.getName()+"]",e);
+            }
+        }
+        return contentMap;
+
+    }
+
+    @Override
+    protected boolean validate( Map<Long ,String > content, File verFile ) {
+            if (content.size()==(int) info.getVerificationMap().get("CRMS").get(verFile.getName())){
+                return true;
+            }
+            return false;
+    }
+
+    @Override
+    protected void doVerifiyInfo(File file){
+        try {
+            // 创建CSV读对象
+            CsvReader csvReader = FileTools.createCsvReader(file);
+            // 读表头
+            csvReader.readHeaders();
+            HashMap<String,Object> map = new HashMap<String,Object>();
+            while (csvReader.readRecord()){
+                map.put( csvReader.get(0), Integer.parseInt(csvReader.get(1)));
+            }
+            info.getVerificationMap().put("CRMS",map);
+            csvReader.close();
+        } catch (Exception e) {
+            logger.error("error get data from "+file.getName(),e);
+        }
+
+    }
+
+    @Override
+    public String returnType() {
+        return "bsmp_crms";
+    }
+
+    @Override
+    public void setValue( String k, String v ) {
+        paramMap.put(k,v);
+    }
+
+    @Override
+    public String getValue( String k ) {
+        return paramMap.get( k);
+    }
+
+    @Override
+    protected UserInfo constructUserObj(Map<String,TreeMap<Long,String>> contents ) {
+
+        Map<String,TreeMap<Long,UserInformationDTO>> users = new HashMap<String,TreeMap<Long,UserInformationDTO>>();
+        Map<String,TreeMap<Long,UserBandwidthInformationDTO>> userBinds =new HashMap<String,TreeMap<Long,UserBandwidthInformationDTO>>();
+
+        contents.forEach((k,v)->{
+            if (api==null){
+                api=BaseFeignBuilder.getCacheFeign(UserInfoServiceApi.class, "myclient", new UserInfoServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+            }
+            String areaCode = api.getAreaCode(k.substring(3,5)).get(0).getMc();
+
+            TreeMap<Long,UserInformationDTO> userDatas = new TreeMap<Long,UserInformationDTO>();
+            TreeMap<Long,UserBandwidthInformationDTO> userBindDatas =new TreeMap<Long,UserBandwidthInformationDTO>();
+            v.forEach((rowNum,rowVaue)->{
+                try {
+                    String[] cont = rowVaue.split("\\|");
+                    UserInformationDTO information = new UserInformationDTO();
+                    UserBandwidthInformationDTO userBand = new UserBandwidthInformationDTO();
+                    //处理逻辑
+                    information.setNature(2);
+                    information.setIdentify("5");
+                    information.setUnitName(cont[1]);
+                    information.setUserCode(cont[2]);
+                    information.setUnitNature(Integer.parseInt(cont[6]));
+                    information.setIdType(Integer.parseInt(cont[7]));
+                    information.setIdNumber(cont[8]);
+                    information.setUnitAddress(cont[9]);
+                    information.setRegisteTime(cont[10]);
+                    information.setServiceRegTime(cont[11]);
+                    information.setOfficerName(cont[12]);
+                    information.setOfficerIdType(Integer.parseInt(cont[13]));
+                    information.setOfficerId(cont[14]);
+                    information.setOfficerTelphone(cont[15]);
+                    information.setOfficerMobile(cont[16]);
+                    information.setOfficerEmail(cont[17]);
+                    information.setAreaCode(areaCode);
+                    information.setCityCodeList(Arrays.asList(areaCode));
+                    information.setCreateUserId(-2);
+                    information.setUpdateUserId(-2);
+
+                    userBand.setUnitName(cont[2]);
+                    userBand.setHouseName(cont[18]);
+                    userBand.setDistributeTime(cont[19]);
+                    userBand.setBandWidth(Long.parseLong(cont[20]));
+                    userBand.setAreaCode(areaCode);
+                    userBand.setCityCodeList(Arrays.asList(areaCode));
+                    userBand.setCreateUserId(-2);
+                    userBand.setUpdateUserId(-2);
+
+                    userDatas.put(rowNum,information);
+                    userBindDatas.put(rowNum,userBand);
+                }catch (Exception e){
+                    logger.error("parse txt param error",e);
+                    constructUserErrorFile(k,rowNum,"参数解析有误");
+                }
+            });
+            users.put(k,userDatas);
+            userBinds.put(k,userBindDatas);
+        });
+        UserInfo info = new UserInfo();
+        info.setUsers(users);
+        info.setUserBinds(userBinds);
+        return info;
+    }
+
+    @Override
+    protected void end() {
+        clearFile(getValue("dataPath"));
+        MultifileWriter writer = MultifileWriter.getInstance();
+//        Set<String> pathString
+        if (errorMap!=null && !errorMap.isEmpty()){
+            errorMap.forEach((fileName,fileValue)->{
+                fileValue.forEach((rowNow,rowName)->{
+                    writer.writeLine(getValue("dataError")+fileName,"第"+rowName+"行 "+fileValue);
+                });
+            });
+        }
+        if (errorHHMap!=null && !errorHHMap.isEmpty()){
+            errorHHMap.forEach((fileName,fileValue)->{
+                fileValue.forEach((rowNow,rowName)->{
+                    writer.writeLine(getValue("dataError")+fileName,"第"+rowName+"行 "+fileValue);
+                });
+            });
+        }
+//        if (errorMap!=null && !errorMap.isEmpty()){
+//        }
+    }
+
+    @Override
+    public void execute() {
+
+        UserInfo userInfo = returnHanderFile();
+        //get current data
+        if (userInfo!=null) {
+            api = BaseFeignBuilder.getCacheFeign(UserInfoServiceApi.class, "myclient", new UserInfoServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+            UserInformationDTO userparam = new UserInformationDTO();
+            userparam.setIsPaging(0);
+            userparam.setIdentify("5");
+            PageResult<UserInformationDTO> userPageResult = api.getAllUser(userparam);
+
+            UserBandwidthInformationDTO bindparam = new UserBandwidthInformationDTO();
+            bindparam.setIsPaging(0);
+            bindparam.setIdentify("5");
+            PageResult<UserBandwidthInformationDTO> userBindPageResult = api.getAllUserBind(bindparam);
+
+            /**
+             * 用户主体
+             */
+            Map<String,TreeMap<Long,UserInformationDTO>> addUserFileMap = new HashMap<String,TreeMap<Long,UserInformationDTO>>();
+            Map<String,TreeMap<Long,UserInformationDTO>> modifyUserFileMap = new HashMap<String,TreeMap<Long,UserInformationDTO>>();
+            List<UserInformationDTO> commonUser = new ArrayList<>();
+            List<UserInformationDTO> deleteUserList = new ArrayList<>();
+
+            if (userPageResult != null && userPageResult.getRows().size()>0) {
+                List<UserInformationDTO> userTableDatas = userPageResult.getRows();
+                if (userInfo.getUsers() != null && !userInfo.getUsers().isEmpty()) {
+                    userInfo.getUsers().forEach((fileName,fileValue)->{
+                        TreeMap<Long,UserInformationDTO> addUserMap = new TreeMap<Long,UserInformationDTO>();
+                        TreeMap<Long,UserInformationDTO> modifyUserMap = new TreeMap<Long,UserInformationDTO>();
+
+                        loop1:
+                        fileValue.forEach((rowNum,rowValue)->{
+                            loop2:
+                            for (UserInformationDTO tableDto : userTableDatas) {
+                                if (rowValue.getUnitName().equals(tableDto.getUnitName())) {
+                                    if (rowValue.getIdType() != null && tableDto.getIdType() != null
+                                            && rowValue.getIdNumber() != null && tableDto.getIdNumber() != null)
+                                    {
+                                        //需要比较ID && IDType
+                                        if (rowValue.getIdType() == tableDto.getIdType()
+                                                && rowValue.getIdNumber().equals(rowValue.getIdNumber())) {
+                                            //名字证件号码都一样,修改
+                                            rowValue.setUserId(tableDto.getUserId());
+                                            modifyUserMap.put(rowNum,rowValue);
+                                            commonUser.add(tableDto);
+                                            break loop2;
+                                        }
+                                    } else {
+                                        //不需要比较证件,相同名字视为一样 修改
+                                        rowValue.setUserId(tableDto.getUserId());
+                                        modifyUserMap.put(rowNum,rowValue);
+                                        commonUser.add(tableDto);
+                                        break loop2;
+                                    }
+                                }
+                            }
+                            addUserMap.put(rowNum,rowValue);
+                        });
+                        addUserFileMap.put(fileName,addUserMap);
+                        modifyUserFileMap.put(fileName,modifyUserMap);
+                    });
+                    //待删除的
+                    deleteUserList.addAll(userTableDatas);
+                    deleteUserList.removeAll(commonUser);
+                } else {
+                    deleteUserList.addAll(userTableDatas);
+                }
+            } else {
+                addUserFileMap.putAll(userInfo.getUsers());
+            }
+
+            /**
+             * 带宽操作
+             */
+
+            Map<String,TreeMap<Long,UserBandwidthInformationDTO>> addUseBindFileMap = new HashMap<>();
+            Map<String,TreeMap<Long,UserBandwidthInformationDTO>> modifyUserBindFileMap = new HashMap<>();
+            List<UserBandwidthInformationDTO> commonUserBind = new ArrayList<>();
+            List<UserBandwidthInformationDTO> deleteUserBindList = new ArrayList<>();
+            if (userBindPageResult != null && userBindPageResult.getRows().size()>0) {
+                List<UserBandwidthInformationDTO> userBindTableDatas = userBindPageResult.getRows();
+                if (userInfo.getUserBinds() != null && !userInfo.getUserBinds().isEmpty()) {
+                    userInfo.getUserBinds().forEach((fileName,fileValue)->{
+                        TreeMap<Long,UserBandwidthInformationDTO> addUseBindrMap = new TreeMap<>();
+                        TreeMap<Long,UserBandwidthInformationDTO> modifyUserBindMap = new TreeMap<>();
+                        loop1:
+                        fileValue.forEach((rowNum,rowValue)->{
+                            loop2:
+                            for (UserBandwidthInformationDTO tableDto : userBindTableDatas) {
+                                if (rowValue.getUnitName().equals(tableDto.getUnitName())
+                                        && rowValue.getHouseName().equals(tableDto.getHouseName())) {
+                                    rowValue.setHhId(tableDto.getHhId());
+                                    rowValue.setHouseId(tableDto.getHouseId());
+                                    modifyUserBindMap.put(rowNum,rowValue);
+                                    commonUserBind.add(tableDto);
+                                    break loop2;
+                                }
+                            }
+                            addUseBindrMap.put(rowNum,rowValue);
+                        });
+                        addUseBindFileMap.put(fileName,addUseBindrMap);
+                        modifyUserBindFileMap.put(fileName,addUseBindrMap);
+                    });
+                    //待删除的
+                    deleteUserBindList.addAll(userBindTableDatas);
+                    deleteUserBindList.removeAll(commonUserBind);
+                } else {
+                    deleteUserBindList.addAll(userBindTableDatas);
+                }
+            } else {
+                addUseBindFileMap.putAll(userInfo.getUserBinds());
+            }
+
+
+            //入库(主体)
+            insertUsers(addUserFileMap);
+            updateUsers(modifyUserFileMap);
+            deleteUsers(deleteUserList);
+            //入库(带宽)
+            addUserBinds(addUseBindFileMap);
+            updateUserBinds(modifyUserBindFileMap);
+            deleteUserBinds(deleteUserBindList);
+
+        }
+    }
+
+
+
+
+    private void insertUsers( Map<String,TreeMap<Long, UserInformationDTO>> map){
+        if (map!=null && !map.isEmpty()){
+            map.forEach((fileName,fileValue)->{
+                List<UserInformationDTO> dtoList = new ArrayList<>();
+                Long row = 0l;
+                Map<Long,Long > rowMap = new HashMap<>();
+                for (Long key:fileValue.keySet()){
+                    dtoList.add(fileValue.get(key));
+                    rowMap.put(row++,key);
+                }
+                List<ResultDto> resultDtos = api.insertsUser(dtoList);
+                if (resultDtos!=null && !resultDtos.isEmpty()){
+                    for (int i=0;i<resultDtos.size();i++){
+                        if (resultDtos.get(i).getResultCode()!=ResultDto.ResultCodeEnum.SUCCESS.getCode()){
+                            constructUserErrorFile(fileName,rowMap.get(i),resultDtos.get(i).getResultMsg());
+                        }
+                    }
+                }
+            });
+
+
+        }
+    }
+    private void updateUsers(Map<String,TreeMap<Long,UserInformationDTO>> map){
+        if (map!=null && !map.isEmpty()){
+            map.forEach((fileName,fileValue)->{
+                List<UserInformationDTO> dtoList = new ArrayList<>();
+                Long row = 0l;
+                Map<Long,Long > rowMap = new HashMap<>();
+                for (Long key:fileValue.keySet()){
+                    dtoList.add(fileValue.get(key));
+                    rowMap.put(row++,key);
+                }
+                List<ResultDto> resultDtos = api.updateUsers(dtoList);
+                if (resultDtos!=null && !resultDtos.isEmpty()){
+                    for (int i=0;i<resultDtos.size();i++){
+                        if (resultDtos.get(i).getResultCode()!=ResultDto.ResultCodeEnum.SUCCESS.getCode()){
+                            constructUserErrorFile(fileName,rowMap.get(i),resultDtos.get(i).getResultMsg());
+                        }
+                    }
+                }
+            });
+        }
+    }
+    private void deleteUsers(List<UserInformationDTO> dtos){
+        if (dtos!=null && !dtos.isEmpty()){
+            StringBuilder sb =new StringBuilder();
+            for (UserInformationDTO dto:dtos){
+                sb.append(dto.getUserId()).append(",");
+            }
+            api.deleteUsers(sb.substring(0,sb.length()-1));
+        }
+    }
+
+    private void addUserBinds(Map<String,TreeMap<Long,UserBandwidthInformationDTO>> map){
+        if (map==null && map.isEmpty()) return;
+        map.forEach((fileName,fileValue)->{
+            List<UserBandwidthInformationDTO> dtoList = new ArrayList<>();
+            Long row = 0l;
+            Map<Long,Long > rowMap = new HashMap<>();
+            for (Long key:fileValue.keySet()){
+                dtoList.add(fileValue.get(key));
+                rowMap.put(row++,key);
+            }
+            ResultDto resultDto = api.insertsUserBinds(dtoList);
+            if (resultDto.getResultCode()!=ResultDto.ResultCodeEnum.SUCCESS.getCode()){
+                Map<String, AjaxValidationResult> resultMap = resultDto.getAjaxValidationResultMap();
+                resultMap.forEach((k,v)->{
+                    Map<String, Object[]> error =  v.getErrorsArgsMap();
+                    if (error!=null && error.isEmpty()){
+                        constructUserHHErrorFile(fileName,rowMap.get(Long.valueOf(k)),JSON.toJSONString(error.values()));
+                    }
+                });
+            }
+
+        });
+    }
+
+    private void updateUserBinds(Map<String,TreeMap<Long,UserBandwidthInformationDTO>> map){
+        if (map==null && map.isEmpty()) return;
+        map.forEach((fileName,fileValue)->{
+            List<UserBandwidthInformationDTO> dtoList = new ArrayList<>();
+            Long row = 0l;
+            Map<Long,Long > rowMap = new HashMap<>();
+            for (Long key:fileValue.keySet()){
+                dtoList.add(fileValue.get(key));
+                rowMap.put(row++,key);
+            }
+            ResultDto resultDto = api.updateUserBinds(dtoList);
+            if (resultDto.getResultCode()!=ResultDto.ResultCodeEnum.SUCCESS.getCode()){
+                Map<String, AjaxValidationResult> resultMap = resultDto.getAjaxValidationResultMap();
+                resultMap.forEach((k,v)->{
+                    Map<String, Object[]> error =  v.getErrorsArgsMap();
+                    if (error!=null && error.isEmpty()){
+                        constructUserHHErrorFile(fileName,rowMap.get(Long.valueOf(k)),JSON.toJSONString(error.values()));
+                    }
+                });
+            }
+
+        });
+    }
+
+    private void deleteUserBinds(List<UserBandwidthInformationDTO> dtos){
+        if (dtos==null && dtos.isEmpty()) return;
+        List<Long> ids = new ArrayList<>();
+        for (UserBandwidthInformationDTO dto:dtos){
+            ids.add(dto.getHhId());
+        }
+        api.deleteUsersBinds(ids);
+    }
+
+    /**
+     * 构建用户主体异常文件
+     * @param fileName
+     * @param rowNum
+     * @param msg
+     */
+    private void constructUserErrorFile(String fileName,Long rowNum ,String msg){
+        if (errorMap!=null){
+            Map<Long,String> content = errorMap.get(fileName);
+            if (content==null){
+                content=new HashMap<>();
+                content.put(rowNum,msg);
+            }else {
+                content.put(rowNum,msg);
+            }
+            errorMap.put(fileName,content);
+        }else {
+            errorMap=new HashMap<>();
+            constructUserErrorFile(fileName,rowNum,msg);
+        }
+
+    }
+    /**
+     * 构建用户带宽异常文件
+     * @param fileName
+     * @param rowNum
+     * @param msg
+     */
+    private void constructUserHHErrorFile(String fileName,Long rowNum ,String msg){
+        if (errorHHMap!=null){
+            Map<Long,String> content = errorHHMap.get(fileName);
+            if (content==null){
+                content=new HashMap<>();
+                content.put(rowNum,msg);
+            }else {
+                content.put(rowNum,msg);
+            }
+            errorHHMap.put(fileName,content);
+        }else {
+            errorHHMap=new HashMap<>();
+            constructUserHHErrorFile(fileName,rowNum,msg);
+        }
+
+    }
+
+}

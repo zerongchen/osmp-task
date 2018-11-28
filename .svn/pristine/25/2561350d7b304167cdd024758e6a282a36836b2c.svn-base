@@ -1,0 +1,28 @@
+package cu.aotain.osmp.task.service;
+
+import com.aotain.cu.serviceapi.dto.UserBandwidthInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+
+import java.util.List;
+
+public class UserInfo{
+
+        private List<UserInformationDTO> users;
+        private List<UserBandwidthInformationDTO> userBinds;
+
+    public List<UserInformationDTO> getUsers() {
+        return users;
+    }
+
+    public void setUsers( List<UserInformationDTO> users ) {
+        this.users = users;
+    }
+
+    public List<UserBandwidthInformationDTO> getUserBinds() {
+        return userBinds;
+    }
+
+    public void setUserBinds( List<UserBandwidthInformationDTO> userBinds ) {
+        this.userBinds = userBinds;
+    }
+}

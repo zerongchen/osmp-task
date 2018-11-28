@@ -1,0 +1,34 @@
+package cu.aotain.osmp.task.service.ipsegmanage.impl;
+
+import com.aotain.cu.serviceapi.model.HouseIPSegmentInformation;
+import cu.aotain.osmp.task.service.ipsegmanage.IpSegManageService;
+import cu.aotain.osmp.task.service.ipsegmanage.IpSegService;
+import cu.aotain.osmp.task.service.ipsegmanage.Ipv6SegService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+/**
+ * Demo class
+ *
+ * @author bang
+ * @date 2018/08/28
+ */
+@Service
+public class IpSegManageServiceImpl implements IpSegManageService{
+
+    @Autowired
+    private IpSegService ipSegService;
+
+    @Autowired
+    private Ipv6SegService ipv6SegService;
+
+    @Override
+    public List<HouseIPSegmentInformation> getDataFromISMS() {
+        List<HouseIPSegmentInformation> ipv4Seg = ipSegService.ipQueryResult();
+        List<HouseIPSegmentInformation> ipv6Seg = ipv6SegService.ipv6QueryResult();
+        ipv4Seg.addAll(ipv6Seg);
+        return ipv4Seg;
+    }
+}

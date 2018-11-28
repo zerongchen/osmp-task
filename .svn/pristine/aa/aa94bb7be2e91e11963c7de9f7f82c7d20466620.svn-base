@@ -1,0 +1,411 @@
+package cu.aotain.osmp.task.util;
+
+import com.alibaba.fastjson.JSON;
+import com.aotain.cu.serviceapi.dto.ResultDto;
+import com.google.common.collect.Lists;
+import cu.aotain.osmp.task.model.Inetnum;
+import cu.aotain.osmp.task.model.Ipv6Inetnum;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.*;
+import java.nio.channels.FileLock;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
+
+/**
+ * 将json串写入文件中
+ *
+ * @author bang
+ * @date 2018/09/05
+ */
+public class MyFileUtils {
+
+    private static final Logger logger = LoggerFactory.getLogger(MyFileUtils.class);
+
+    private static final String IPV4_FILENAME = "ipv4";
+    private static final String IPV6_FILENAME = "ipv6";
+
+    private static final String ERROR_FILENAME = "error";
+
+    private static ReentrantLock lock = new ReentrantLock();
+
+    /**
+     *
+     * @param filePath
+     * @param objectList
+     */
+    public static void writeStrToFile(String filePath,String fileName,List<Object> objectList){
+        if (objectList.isEmpty()){
+            return;
+        }
+        if (StringUtils.isEmpty(filePath)){
+            logger.info("filepath is null,it will use the system environment variable ${CU_HOME}");
+            filePath = System.getenv().get("CU_HOME");
+            if (StringUtils.isEmpty(filePath)){
+                logger.info("can not find the system environment variable ${CU_HOME}");
+                return;
+            }
+        }
+        if (StringUtils.isEmpty(fileName)){
+            fileName = IPV4_FILENAME;
+        }
+        String ipv4TempFileName = filePath + File.separator + fileName +  ".tmp";
+        String ipv4RealFileName = filePath + File.separator + fileName +  ".txt";
+
+//        String ipv6TempFileName = filePath + File.separator + IPV6_FILENAME +  ".tmp";
+//        String ipv6RealFileName = filePath + File.separator + IPV6_FILENAME +  ".txt";
+        createFileIfNotExists(ipv4TempFileName);
+        createFileIfNotExists(ipv4RealFileName);
+
+        // 文件io操作
+        FileOutputStream fileOutputStream = null;
+        OutputStreamWriter outputStreamWriter = null;
+        BufferedWriter bufferWriter = null;
+        FileLock fileLock = null;
+        try {
+            lock.lock();
+            fileOutputStream = new FileOutputStream(ipv4TempFileName);
+            fileLock = fileOutputStream.getChannel().tryLock();
+            if ( fileLock==null ) {
+                logger.info("文件已被占用...");
+                return ;
+            }
+
+            outputStreamWriter = new OutputStreamWriter(fileOutputStream, "UTF-8");
+            bufferWriter = new BufferedWriter(outputStreamWriter);
+
+            Iterator iterator = objectList.iterator();
+            while (iterator.hasNext()){
+                bufferWriter.write(JSON.toJSONString(iterator.next()));
+                bufferWriter.newLine();
+            }
+
+            bufferWriter.flush();
+            bufferWriter.close();
+            outputStreamWriter.close();
+            // 关闭文件流避免文件删除失败
+            fileOutputStream.close();
+
+            FileUtils.copyFile(new File(ipv4TempFileName), new File(ipv4RealFileName));
+            FileUtils.deleteQuietly(new File(ipv4TempFileName));
+
+        } catch (FileNotFoundException e) {
+            logger.error("writeMessageToFile failed,because the temp file not found",e);
+            return ;
+        } catch (IOException e) {
+            logger.error("writeMessageToFile failed,because the IOException",e);
+            return ;
+        } finally {
+            try {
+                if (bufferWriter!=null) {
+                    bufferWriter.close();
+                }
+                if (outputStreamWriter!=null) {
+                    outputStreamWriter.close();
+                }
+                if (fileOutputStream!=null){
+                    if (fileLock!=null&&fileLock.isValid()){
+                        fileLock.release();
+                    }
+                }
+                if (fileOutputStream!=null) {
+                    fileOutputStream.close();
+                }
+
+                lock.unlock();
+
+            } catch (Exception e) {
+                logger.error("close IOStream failed...",e);
+                return ;
+            }
+
+        }
+    }
+
+    public static void writeErrorFile(String filePath,String fileName,Map<String,ResultDto> resultMap){
+        if (resultMap.isEmpty()){
+            return;
+        }
+        if (StringUtils.isEmpty(filePath)){
+            logger.info("filepath is null,it will use the system environment variable ${CU_HOME}");
+            filePath = System.getenv().get("CU_HOME");
+            if (StringUtils.isEmpty(filePath)){
+                logger.info("can not find the system environment variable ${CU_HOME}");
+                return;
+            }
+        }
+        if (StringUtils.isEmpty(fileName)){
+            fileName = ERROR_FILENAME;
+        }
+        String errorTempFileName = filePath + File.separator + fileName +  ".tmp";
+        String errorRealFileName = filePath + File.separator + fileName +  ".txt";
+
+        createFileIfNotExists(errorTempFileName);
+        createFileIfNotExists(errorRealFileName);
+
+        // 文件io操作
+        FileOutputStream fileOutputStream = null;
+        OutputStreamWriter outputStreamWriter = null;
+        BufferedWriter bufferWriter = null;
+        FileLock fileLock = null;
+        try {
+            lock.lock();
+            fileOutputStream = new FileOutputStream(errorTempFileName);
+            fileLock = fileOutputStream.getChannel().tryLock();
+            if ( fileLock==null ) {
+                logger.info("文件已被占用...");
+                return ;
+            }
+
+            outputStreamWriter = new OutputStreamWriter(fileOutputStream, "UTF-8");
+            bufferWriter = new BufferedWriter(outputStreamWriter);
+
+            Set<String> set = resultMap.keySet();
+            Iterator<String> iterator = set.iterator();
+            while (iterator.hasNext()){
+                String key = iterator.next();
+                ResultDto resultDto = resultMap.get(key);
+                if (resultDto.getResultCode()==0){
+                    continue;
+                }
+                if (!resultDto.getAjaxValidationResultMap().isEmpty()){
+                    Set<String> set1 = resultDto.getAjaxValidationResultMap().keySet();
+                    Iterator<String> iterator1 = set1.iterator();
+                    while (iterator1.hasNext()){
+                        String index = iterator1.next();
+                        bufferWriter.write(key+"_"+index+"--"+resultDto.getAjaxValidationResultMap().get(index).getErrorsToString());
+                        bufferWriter.newLine();
+                    }
+                }
+            }
+
+            bufferWriter.flush();
+            bufferWriter.close();
+            outputStreamWriter.close();
+            // 关闭文件流避免文件删除失败
+            fileOutputStream.close();
+
+            FileUtils.copyFile(new File(errorTempFileName), new File(errorRealFileName));
+            FileUtils.deleteQuietly(new File(errorTempFileName));
+
+        } catch (FileNotFoundException e) {
+            logger.error("writeMessageToFile failed,because the temp file not found",e);
+            return ;
+        } catch (IOException e) {
+            logger.error("writeMessageToFile failed,because the IOException",e);
+            return ;
+        } finally {
+            try {
+                if (bufferWriter!=null) {
+                    bufferWriter.close();
+                }
+                if (outputStreamWriter!=null) {
+                    outputStreamWriter.close();
+                }
+                if (fileOutputStream!=null){
+                    if (fileLock!=null&&fileLock.isValid()){
+                        fileLock.release();
+                    }
+                }
+                if (fileOutputStream!=null) {
+                    fileOutputStream.close();
+                }
+
+                lock.unlock();
+
+            } catch (Exception e) {
+                logger.error("close IOStream failed...",e);
+                return ;
+            }
+
+        }
+    }
+
+    /**
+     *  根据指定路径创建文件夹
+     * @param path
+     */
+    private static void createFolderIfNotExists(String path) {
+        File file = new File(path);
+        if ( file.exists() ) {
+            return;
+        }
+        file.mkdirs();
+//        if (!file.getParentFile().exists()) {
+//            file.mkdirs();
+//        }
+    }
+
+    /**
+     * 根据指定路径创建文件
+     * if parentFolder is not exist it will throw exception
+     * @param path
+     */
+    private static void createFileIfNotExists(String path) {
+        File file = new File(path);
+        if(!file.exists()){
+            try {
+                file.createNewFile();
+            } catch (IOException e) {
+                logger.error("create file failed",e);
+            }
+
+        }
+    }
+
+    public static List<Inetnum> readIpv4File(String filePath){
+        List<Inetnum> inetnumList = Lists.newArrayList();
+
+        if (StringUtils.isEmpty(filePath)){
+            logger.info("filepath is null,it will use the system environment variable ${CU_HOME}");
+            filePath = System.getenv().get("CU_HOME");
+            if (StringUtils.isEmpty(filePath)){
+                return Lists.newArrayList();
+            }
+        }
+
+        String ipv4RealFileName = filePath + File.separator + IPV4_FILENAME +  ".txt";
+
+        // 文件io操作
+        FileInputStream fileInputStream = null;
+        InputStreamReader inputStreamReader = null;
+        BufferedReader bufferedReader = null;
+        FileLock fileLock = null;
+        try {
+            lock.lock();
+            fileInputStream = new FileInputStream(ipv4RealFileName);
+
+            inputStreamReader = new InputStreamReader(fileInputStream, "UTF-8");
+            bufferedReader = new BufferedReader(inputStreamReader);
+
+            String line = null;
+            while ( (line = bufferedReader.readLine()) != null){
+                Inetnum inetnum = JSON.parseObject(line,Inetnum.class);
+                inetnumList.add(inetnum);
+            }
+
+            bufferedReader.close();
+            inputStreamReader.close();
+            // 关闭文件流避免文件删除失败
+            fileInputStream.close();
+
+        } catch (FileNotFoundException e) {
+            logger.error("writeMessageToFile failed,because the temp file not found",e);
+            return inetnumList;
+        } catch (IOException e) {
+            logger.error("writeMessageToFile failed,because the IOException",e);
+            return inetnumList;
+        } finally {
+            try {
+                if (bufferedReader!=null) {
+                    bufferedReader.close();
+                }
+                if (inputStreamReader!=null) {
+                    inputStreamReader.close();
+                }
+                if (fileInputStream!=null){
+                    if (fileLock!=null&&fileLock.isValid()){
+                        fileLock.release();
+                    }
+                }
+                if (fileInputStream!=null) {
+                    fileInputStream.close();
+                }
+
+                lock.unlock();
+
+            } catch (Exception e) {
+                logger.error("close IOStream failed...",e);
+                return inetnumList;
+            }
+
+        }
+        return  inetnumList;
+    }
+
+    public static List<Ipv6Inetnum> readIpv6File(String filePath){
+        List<Ipv6Inetnum> inetnumList = Lists.newArrayList();
+
+        if (StringUtils.isEmpty(filePath)){
+            logger.info("filepath is null,it will use the system environment variable ${CU_HOME}");
+            filePath = System.getenv().get("CU_HOME");
+            if (StringUtils.isEmpty(filePath)){
+                return Lists.newArrayList();
+            }
+        }
+
+        String ipv6RealFileName = filePath + File.separator + IPV6_FILENAME +  ".txt";
+
+        // 文件io操作
+        FileInputStream fileInputStream = null;
+        InputStreamReader inputStreamReader = null;
+        BufferedReader bufferedReader = null;
+        FileLock fileLock = null;
+        try {
+            lock.lock();
+            fileInputStream = new FileInputStream(ipv6RealFileName);
+
+            inputStreamReader = new InputStreamReader(fileInputStream, "UTF-8");
+            bufferedReader = new BufferedReader(inputStreamReader);
+
+            String line = null;
+            while ( (line = bufferedReader.readLine()) != null){
+                Ipv6Inetnum inetnum = JSON.parseObject(line,Ipv6Inetnum.class);
+                inetnumList.add(inetnum);
+            }
+
+            bufferedReader.close();
+            inputStreamReader.close();
+            // 关闭文件流避免文件删除失败
+            fileInputStream.close();
+
+        } catch (FileNotFoundException e) {
+            logger.error("writeMessageToFile failed,because the temp file not found",e);
+            return inetnumList;
+        } catch (IOException e) {
+            logger.error("writeMessageToFile failed,because the IOException",e);
+            return inetnumList;
+        } finally {
+            try {
+                if (bufferedReader!=null) {
+                    bufferedReader.close();
+                }
+                if (inputStreamReader!=null) {
+                    inputStreamReader.close();
+                }
+                if (fileInputStream!=null){
+                    if (fileLock!=null&&fileLock.isValid()){
+                        fileLock.release();
+                    }
+                }
+                if (fileInputStream!=null) {
+                    fileInputStream.close();
+                }
+
+                lock.unlock();
+
+            } catch (Exception e) {
+                logger.error("close IOStream failed...",e);
+                return inetnumList;
+            }
+
+        }
+        return  inetnumList;
+    }
+
+    public static void main(String[] args) {
+//        List<Inetnum> inetnumList = InetnumBeanGenerator.getInetnumList();
+//        List<Ipv6Inetnum> inetnumList = InetnumBeanGenerator.getIpv6InetnumList();
+//        List<Object> objectList = Lists.newArrayList();
+//        objectList.addAll(inetnumList);
+//        writeStrToFile(null, objectList);
+        List<Ipv6Inetnum> inetnumList = readIpv6File(null);
+        System.out.println("======="+inetnumList);
+    }
+}

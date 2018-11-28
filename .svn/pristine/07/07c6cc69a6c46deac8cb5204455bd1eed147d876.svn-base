@@ -1,0 +1,198 @@
+package cu.aotain.osmp.task.service.ipsegmanage.impl;
+
+import com.alibaba.fastjson.JSON;
+import com.aotain.common.utils.tools.Tools;
+import com.aotain.common.utils.tools.XmlUtils;
+import com.aotain.cu.serviceapi.model.HouseIPSegmentInformation;
+import com.google.common.collect.Lists;
+import cu.aotain.osmp.task.model.Inetnum;
+import cu.aotain.osmp.task.model.ReqQuery;
+import cu.aotain.osmp.task.model.RespQuery;
+import cu.aotain.osmp.task.service.ipsegmanage.IWebServiceQuery;
+import cu.aotain.osmp.task.service.ipsegmanage.IpSegService;
+import org.apache.commons.lang.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.util.List;
+
+/**
+ * Demo class
+ *
+ * @author bang
+ * @date 2018/08/28
+ */
+@Service
+public class IpSegServiceImpl implements IpSegService{
+
+    @Autowired
+    private IWebServiceQuery iWebServiceQuery;
+
+    private static final int MAX_LENGTH = 2000;
+    private static final int SUCCESS_CODE = 0;
+
+    private static final Logger logger = LoggerFactory.getLogger(IpSegServiceImpl.class);
+
+    @Override
+    public List<HouseIPSegmentInformation> ipQueryResult() {
+        List<Inetnum> inetnumList = getWebServiceCallBackData();
+        if (inetnumList.isEmpty()){
+            return null;
+        }
+        List<HouseIPSegmentInformation> ipSegmentInformationList = Lists.newArrayList();
+        inetnumList.forEach(item -> {
+            HouseIPSegmentInformation houseIPSegmentInformation = generateBeanByInetnum(item);
+            ipSegmentInformationList.add(houseIPSegmentInformation);
+        });
+        return ipSegmentInformationList;
+    }
+
+    @Override
+    public List<Inetnum> getWebServiceCallBackData() {
+        List<ReqQuery> reqQueryList = generatorQueryParam();
+        return getResultData(reqQueryList);
+    }
+
+    @Override
+    public List<Inetnum> getResultData(List<ReqQuery> reqQuery) {
+        if (reqQuery.isEmpty()){
+            logger.info("can not find startIp and endIp in db,so it is no need to call the webservice");
+            return null;
+        }
+        List<Inetnum> result = Lists.newArrayList();
+        reqQuery.forEach(item->{
+            List<RespQuery> respQueryList = getResultData(item);
+            respQueryList.forEach(respQuery -> {
+                if (respQuery.getRetResult().getRetCode().intValue()==SUCCESS_CODE){
+                    result.addAll(respQuery.getInetnum());
+                }
+            });
+        });
+        return result;
+
+    }
+
+    @Override
+    public List<RespQuery> getResultData(ReqQuery reqQuery) {
+        List<ReqQuery> queryList = getSatisfiedQueryParam(reqQuery);
+        if (queryList.isEmpty()){
+            logger.info("search param is not valid",JSON.toJSONString(reqQuery));
+            return null;
+        }
+        // 返回的结果集
+        List<RespQuery> respQueryList = Lists.newArrayList();
+
+        queryList.forEach(item->{
+            try{
+                String resXmlStream = iWebServiceQuery.ipv4Query(XmlUtils.toXmlString(item));
+                if (StringUtils.isEmpty(resXmlStream)){
+                    logger.info("search result is null");
+                }
+                InputStream inputStream   =   new ByteArrayInputStream(resXmlStream.getBytes("UTF-8"));
+                RespQuery respQuery = XmlUtils.createBean(inputStream,RespQuery.class);
+                respQueryList.add(respQuery);
+            } catch (Exception e){
+                logger.error("query error..."+e,JSON.toJSONString(reqQuery));
+            }
+
+        });
+
+        return respQueryList;
+    }
+
+    /**
+     * 生成webService查询条件
+     */
+    private List<ReqQuery> generatorQueryParam() {
+        List<ReqQuery> reqQuery = Lists.newArrayList();
+        return reqQuery;
+    }
+
+    /**
+     * 根据查询条件确定查询次数(超过2000需要拆分为多次查询)
+     * @param reqQuery
+     * @return
+     */
+    private List<ReqQuery> getSatisfiedQueryParam(ReqQuery reqQuery){
+        if (StringUtils.isEmpty(reqQuery.getStartIp())){
+            logger.info("the query param of startIp can not be null", JSON.toJSONString(reqQuery));
+            return null;
+        }
+        if (StringUtils.isEmpty(reqQuery.getEndIp())){
+            logger.info("the query param of endIp can not be null", JSON.toJSONString(reqQuery));
+            return null;
+        }
+        if (!Tools.isIpAddress(reqQuery.getStartIp())){
+            logger.info("the startIp is an invalid ipv4 address", JSON.toJSONString(reqQuery));
+            return null;
+        }
+        if (!Tools.isIpAddress(reqQuery.getEndIp())){
+            logger.info("the endIp is an invalid ipv4 address", JSON.toJSONString(reqQuery));
+            return null;
+        }
+        long start = Tools.ip2long(reqQuery.getStartIp());
+        long end = Tools.ip2long(reqQuery.getEndIp());
+        int count = ((end-start)%2000==0) ? (int)(end-start)/2000 : (int)(end-start)/2000+1;
+
+        List<ReqQuery> reqQueryList = Lists.newArrayList();
+        long before = start;
+        if (end-start>=MAX_LENGTH){
+            for (int i=0;i<count;i++){
+                ReqQuery reqQuery1 = new ReqQuery();
+                reqQuery1.setStartIp(Tools.long2ip(before));
+                if (i==count-1){
+                    // 最后一次的endIp为参数传递过来的endIp
+                    reqQuery1.setEndIp(reqQuery.getEndIp());
+                } else {
+                    reqQuery1.setEndIp(Tools.long2ip(before+=2000));
+                }
+                reqQueryList.add(reqQuery1);
+            }
+        } else {
+            reqQueryList.add(reqQuery);
+        }
+
+        return reqQueryList;
+    }
+
+    /**
+     * 根据查询的inetnum结果封装实体bean
+     * @param inetnum
+     * @return
+     */
+    private HouseIPSegmentInformation generateBeanByInetnum(Inetnum inetnum){
+        HouseIPSegmentInformation houseIPSegmentInformation = new HouseIPSegmentInformation();
+        if(!StringUtils.isEmpty(inetnum.getBasicInfo().getStartIp())){
+            houseIPSegmentInformation.setStartIP(inetnum.getBasicInfo().getStartIp());
+        }
+        if(!StringUtils.isEmpty(inetnum.getBasicInfo().getEndIp())){
+            houseIPSegmentInformation.setEndIP(inetnum.getBasicInfo().getEndIp());
+        }
+        houseIPSegmentInformation.setIpType(3);
+        if(!StringUtils.isEmpty(inetnum.getIPInfo().getUserSubject())){
+            houseIPSegmentInformation.setUserName(inetnum.getIPInfo().getUserSubject());
+        }
+        if(!StringUtils.isEmpty(inetnum.getIPInfo().getFprq())){
+            houseIPSegmentInformation.setUseTime(inetnum.getIPInfo().getFprq());
+        }
+        houseIPSegmentInformation.setIdType(inetnum.getBackInfo().getSydwzjlx());
+        if(!StringUtils.isEmpty(inetnum.getBackInfo().getSydwzjhm())){
+            houseIPSegmentInformation.setIdNumber(inetnum.getBackInfo().getSydwzjhm());
+        }
+        houseIPSegmentInformation.setAreaCode(inetnum.getBackInfo().getShiid()+"");
+        return houseIPSegmentInformation;
+    }
+
+    public static void main(String[] args) {
+        ReqQuery reqQuery = new ReqQuery();
+        reqQuery.setStartIp("192.168.0.1");
+        reqQuery.setEndIp("192.168.20.1");
+        IpSegServiceImpl ipSegService = new IpSegServiceImpl();
+        List<ReqQuery> reqQueryList = ipSegService.getSatisfiedQueryParam(reqQuery);
+        reqQueryList.forEach(item-> System.out.println(item));
+    }
+}

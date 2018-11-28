@@ -1,0 +1,22 @@
+package cu.aotain.osmp.task.serviceapi;
+
+
+import com.aotain.cu.serviceapi.dto.UserBandwidthInformationDTO;
+import com.aotain.cu.serviceapi.dto.UserInformationDTO;
+import feign.Headers;
+import feign.RequestLine;
+
+import java.util.List;
+
+@Headers({ "Content-Type: application/json", "Accept: application/json" })
+public interface UserInfoServiceApi {
+
+
+    @RequestLine("GET /pre/user/listUserInfo")
+    public List<UserInformationDTO> getAllUser(UserInformationDTO dto);
+
+    @RequestLine("GET /pre/user/bandwidth/query")
+    public List<UserBandwidthInformationDTO> getAllUserBind(UserBandwidthInformationDTO dto);
+
+
+}

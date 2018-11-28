@@ -1,0 +1,5 @@
+quartz.jobs=demo_job1,demo_job2
+quartz.jobs.demo_job1.class=cu.aotain.osmp.task.quartz.DemoJob
+quartz.jobs.demo_job1.cron=*/5 * * * * ? 
+quartz.jobs.demo_job2.class=cu.aotain.osmp.task.quartz.DemoJob2
+quartz.jobs.demo_job2.cron=*/10 * * * * ? 

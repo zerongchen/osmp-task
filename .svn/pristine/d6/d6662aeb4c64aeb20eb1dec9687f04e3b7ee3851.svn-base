@@ -1,0 +1,261 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.aotain.common.utils.tools.FileUtils;
+import com.aotain.cu.serviceapi.dto.HouseFrameInformationDTO;
+import com.aotain.cu.serviceapi.dto.HouseInformationDTO;
+import com.aotain.cu.serviceapi.model.HouseUserFrameInformation;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.google.common.collect.Maps;
+import cu.aotain.osmp.task.constant.HouseAreaCodeEnum;
+import cu.aotain.osmp.task.factory.IcosSystem;
+import cu.aotain.osmp.task.service.HouseCacheService;
+import cu.aotain.osmp.task.service.IcosSystemFileAnalyze;
+import cu.aotain.osmp.task.service.VerificationInfo;
+import cu.aotain.osmp.task.serviceapi.RackServiceApi;
+import cu.aotain.osmp.task.serviceapi.RackServiceApiHystrix;
+import org.apache.commons.collections.CollectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Required;
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+import java.util.*;
+
+/**
+ * 描述:
+ * 机房机架信息列表
+ *
+ * @author chenym@aotain.com
+ * @create 2018-08-24 16:34
+ */
+@Service
+public class IcosSystemRackListServiceImpl extends IcosSystemFileAnalyze implements IcosSystem {
+
+    private static final Logger LOG = LoggerFactory.getLogger(IcosSystemRackListServiceImpl.class);
+
+    private VerificationInfo info;
+
+    @Autowired
+    @Required
+    public void setInfo(VerificationInfo info) {
+        this.info = info;
+    }
+
+    @Autowired
+    private HouseCacheService houseCacheService;
+
+    @Override
+    public void execte(File file) {
+        this.process(file);
+    }
+
+    @Override
+    public void postProcess(File file) {
+
+    }
+
+    @Override
+    public List<String> resolveAndValid(File file) {
+        if (file == null) {
+            return null;
+        }
+        LOG.info("start resolveAndValid file=" + file.getName());
+        List<String> contexts = FileUtils.readFileByLine(file);
+        List<String> contextLists = new ArrayList<>();
+        Integer count = 0;
+        if (contexts.size() > 0) {
+            for (String line : contexts) {
+                count++;
+                String[] arr = line.split(",");
+                if (arr.length == 4) {
+                    contextLists.add(line);
+                }
+            }
+        }
+        contexts = null;
+        if (LOG.isDebugEnabled()) {
+            LOG.debug(" parse file=" + file.getName() + " finish,numbers=" + contextLists.size() + ",fileTotalLines=" + count);
+        }
+        return contextLists;
+    }
+
+    @Override
+    public void assemblyBean(List<String> list) {
+        LOG.info("start rackList assemblyBean list.size()=" + list.size());
+        List<HouseFrameInformationDTO> currentDataList = new ArrayList<>();
+        HouseFrameInformationDTO model = null;
+        Map<String, String> frameNameLine = Maps.newHashMap();
+
+        for (String line : list) {
+
+            String[] arr = line.split(",");
+            if (arr.length == 4) {
+                //机架名称
+                String name = arr[0];
+                frameNameLine.put(name, line);
+            }
+        }
+        Set currentFrameNameSet = frameNameLine.keySet();
+        Set databaseFrameNameSet = new HashSet();
+        //获取所有的机架信息
+        RackServiceApi rackServiceImpl = BaseFeignBuilder.getCacheFeign(RackServiceApi.class, "myclient", new RackServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+        System.out.println("-----------------------------------------");
+        HouseFrameInformationDTO dto = new HouseFrameInformationDTO();
+        dto.setIsPaging(0);
+        PageResult<HouseFrameInformationDTO> databaseRecords = rackServiceImpl.queryRack(dto);
+        for (HouseFrameInformationDTO m : databaseRecords.getRows()) {
+            databaseFrameNameSet.add(m.getFrameName());
+        }
+
+        // 待插入的机房名称, 文件中存在，数据库中不存在
+        List<String> preInsertFrameName = (List) CollectionUtils.subtract(currentFrameNameSet, databaseFrameNameSet);
+
+        // 待修改的机房名称, 文件中存在，数据库中不存在
+        List<String> preUpdateFrameName = (List) CollectionUtils.intersection(currentFrameNameSet, databaseFrameNameSet);
+
+        // 待删除的机房名称, 文件中存在，数据库中不存在
+        List<String> predeleteFrameName = (List) CollectionUtils.subtract(databaseFrameNameSet, currentFrameNameSet);
+
+        Map<String, List<HouseFrameInformationDTO>> map = new HashMap<>();
+
+        try {
+            if (preInsertFrameName != null && preInsertFrameName.size() > 0) {
+
+                HouseFrameInformationDTO m = null;
+                for (String iStr : preInsertFrameName) {
+                    model = new HouseFrameInformationDTO();
+                    String iLine = frameNameLine.get(iStr);
+                    String[] arr = iLine.split(",");
+                    //机架名称
+                    String name = arr[0];
+                    //机房编码
+                    String areaCode = arr[1];
+                    //地区编码
+                    String cityCode = arr[2];
+                    //客户编码
+                    String customerName = arr[3];
+                    //机房编码
+                    HouseAreaCodeEnum e = HouseAreaCodeEnum.getHouseidstrByCode(areaCode);
+                    if (e == null) {
+                        LOG.error("areaCode=" + areaCode + ",get HouseAreaCodeEnum is NULL");
+                        continue;
+                    }
+                    String houseidstr = e.getHouseidstr();
+                    //机房信息
+                    HouseInformationDTO n = houseCacheService.getHouseInfo(houseidstr);
+
+                    if (n == null || n.getHouseId() == 0) {
+                        LOG.error(houseidstr + " get houseid from database is null");
+                        continue;
+                    }
+                    //机架信息
+                    m = new HouseFrameInformationDTO();
+                    m.setHouseId(n.getHouseId());
+                    m.setFrameName(name);
+                    m.setFrameNo(name);
+                    m.setAreaCode(cityCode);
+                    List cityCodeLists = new ArrayList();
+                    cityCodeLists.add(m.getAreaCode());
+                    m.setCityCodeList(cityCodeLists);
+
+                    m.setOccupancy(1);
+                    m.setUseType(2);
+                    m.setCreateUserId(-1);
+
+                    /**
+                     * 机房用户信息
+                     */
+                    List<HouseUserFrameInformation> HouseUserFrameInformations = new ArrayList<>();
+                    HouseUserFrameInformation houseUser = new HouseUserFrameInformation();
+                    houseUser.setUserName(customerName);
+                    houseUser.setHouseId(n.getHouseId());
+                    HouseUserFrameInformations.add(houseUser);
+                    m.setUserFrameList(HouseUserFrameInformations);
+
+                    if (map.containsKey(houseidstr)) {
+                        map.get(houseidstr).add(m);
+                    } else {
+                        List<HouseFrameInformationDTO> HouseFrameInformationDTOs = new ArrayList<>();
+                        HouseFrameInformationDTOs.add(m);
+                        map.put(houseidstr, HouseFrameInformationDTOs);
+                    }
+                }
+            }
+        } catch (Exception e) {
+
+            LOG.error("", e);
+        }
+        System.out.println(map);
+
+
+        // 新增
+/*        for (Collection n : map.values()) {
+            List<HouseFrameInformationDTO> lists = (List<HouseFrameInformationDTO>) n;
+            rackServiceImpl.insertRack(lists);
+        }*/
+
+        List<HouseFrameInformationDTO> updateHouseFrameInformationDTOs = new ArrayList<>();
+        try {
+            if (preUpdateFrameName != null && preUpdateFrameName.size() > 0) {
+                HouseFrameInformationDTO m = null;
+                for (String uStr : preUpdateFrameName) {
+                    model = new HouseFrameInformationDTO();
+                    String iLine = frameNameLine.get(uStr);
+                    String[] arr = iLine.split(",");
+                    //机架名称
+                    String name = arr[0];
+                    //机房编码
+                    String areaCode = arr[1];
+                    //地区编码
+                    String cityCode = arr[2];
+                    //客户编码
+                    String customerName = arr[3];
+                    //机房编码
+                    HouseAreaCodeEnum e = HouseAreaCodeEnum.getHouseidstrByCode(areaCode);
+                    if (e == null) {
+                        LOG.error("areaCode=" + areaCode + ",get HouseAreaCodeEnum is NULL");
+                        continue;
+                    }
+                    String houseidstr = e.getHouseidstr();
+                    //机房信息
+                    HouseInformationDTO n = houseCacheService.getHouseInfo(houseidstr);
+
+                    if (n == null || n.getHouseId() == 0) {
+                        LOG.error(houseidstr + " get houseid from database is null");
+                        continue;
+                    }
+                    //机架信息
+                    m = new HouseFrameInformationDTO();
+                    m.setHouseId(n.getHouseId());
+                    m.setFrameName(name);
+                    m.setFrameNo(name);
+                    m.setAreaCode(cityCode);
+                    List cityCodeLists = new ArrayList();
+                    cityCodeLists.add(m.getAreaCode());
+                    m.setCityCodeList(cityCodeLists);
+
+                    m.setUpdateUserId(-1);
+
+                    /**
+                     * 机房用户信息
+                     */
+                    List<HouseUserFrameInformation> HouseUserFrameInformations = new ArrayList<>();
+                    HouseUserFrameInformation houseUser = new HouseUserFrameInformation();
+                    houseUser.setUserName(customerName);
+                    houseUser.setHouseId(n.getHouseId());
+                    HouseUserFrameInformations.add(houseUser);
+                    m.setUserFrameList(HouseUserFrameInformations);
+                    updateHouseFrameInformationDTOs.add(m);
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+
+        System.out.println(updateHouseFrameInformationDTOs);
+
+    }
+}

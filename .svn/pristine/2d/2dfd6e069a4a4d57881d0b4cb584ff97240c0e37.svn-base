@@ -1,0 +1,156 @@
+package cu.aotain.osmp.task.service.impl;
+
+import com.aotain.common.utils.tools.FileUtils;
+import com.aotain.cu.serviceapi.dto.HouseFrameInformationDTO;
+import com.aotain.cu.serviceapi.model.PageResult;
+import com.aotain.cu.serviceapi.utils.BaseFeignBuilder;
+import com.google.common.collect.Maps;
+import cu.aotain.osmp.task.constant.HouseAreaCodeEnum;
+import cu.aotain.osmp.task.factory.IcosSystem;
+import cu.aotain.osmp.task.service.IcosSystemFileAnalyze;
+import cu.aotain.osmp.task.service.VerificationInfo;
+import cu.aotain.osmp.task.serviceapi.RackServiceApi;
+import cu.aotain.osmp.task.serviceapi.RackServiceApiHystrix;
+import org.apache.commons.collections.CollectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Required;
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+import java.util.*;
+
+/**
+ * 描述:
+ * 机房机架信息列表
+ *
+ * @author chenym@aotain.com
+ * @create 2018-08-24 16:34
+ */
+@Service
+public class IcosSystemRackListServiceImpl extends IcosSystemFileAnalyze implements IcosSystem {
+    private static final Logger LOG = LoggerFactory.getLogger(IcosSystemRackListServiceImpl.class);
+    private VerificationInfo info;
+
+    @Autowired
+    @Required
+    public void setInfo(VerificationInfo info) {
+        this.info = info;
+    }
+
+    @Override
+    public void execte(File file) {
+        this.process(file);
+    }
+
+    @Override
+    public void postProcess(File file) {
+
+    }
+
+    @Override
+    public List<String> resolveAndValid(File file) {
+        if (file == null) {
+            return null;
+        }
+        LOG.info("start resolveAndValid file=" + file.getName());
+        List<String> contexts = FileUtils.readFileByLine(file);
+        List<String> contextLists = new ArrayList<>();
+        Integer count = 0;
+        if (contexts.size() > 0) {
+            for (String line : contexts) {
+                count++;
+                String[] arr = line.split(",");
+                if (arr.length == 4) {
+                    contextLists.add(line);
+                }
+            }
+        }
+        contexts = null;
+        if (LOG.isDebugEnabled()) {
+            LOG.debug(" parse file=" + file.getName() + " finish,numbers=" + contextLists.size() + ",fileTotalLines=" + count);
+        }
+        return contextLists;
+    }
+
+    @Override
+    public void assemblyBean(List<String> list) {
+        LOG.info("start rackList assemblyBean list.size()=" + list.size());
+        List<HouseFrameInformationDTO> currentDataList = new ArrayList<>();
+        HouseFrameInformationDTO model = null;
+        Map<String, String> frameNameLine = Maps.newHashMap();
+
+        for (String line : list) {
+
+            String[] arr = line.split(",");
+            if (arr.length == 4) {
+                //机架名称
+                String name = arr[0];
+                //机房编码
+                String areaCode = arr[1];
+                //地区编码
+                String cityCode = arr[2];
+                //客户编码
+                String customerName = arr[3];
+
+                frameNameLine.put(name, line);
+                //机房编码
+                String houseridstr = HouseAreaCodeEnum.getHouseidstrByCode(areaCode).getHouseidstr();
+                // 获取机房id
+                String houseid = "";
+                //获取机架id
+                String frameid = "";
+
+/*                model.setFrameName(name);
+                model.setAreaCode();
+                model.setAreaCode(cityCode);
+                model*/
+                // model
+            }
+        }
+        Set currentFrameNameSet = frameNameLine.keySet();
+        Set databaseFrameNameSet = new HashSet();
+        //获取所有的机架信息
+        RackServiceApi idemo = BaseFeignBuilder.getCacheFeign(RackServiceApi.class, "myclient", new RackServiceApiHystrix(), BaseFeignBuilder.EncodeDecodeType.EDT_JSON_JSON);
+        System.out.println("-----------------------------------------");
+        HouseFrameInformationDTO dto = new HouseFrameInformationDTO();
+        dto.setIsPaging(0);
+        PageResult<HouseFrameInformationDTO> databaseRecords = idemo.queryRack(dto);
+        for (HouseFrameInformationDTO m : databaseRecords.getRows()) {
+            databaseFrameNameSet.add(m.getFrameName());
+        }
+
+        // 待插入的机房名称, 文件中存在，数据库中不存在
+        List<String> preInsertFrameName = (List) CollectionUtils.subtract(currentFrameNameSet, databaseFrameNameSet);
+
+        // 待修改的机房名称, 文件中存在，数据库中不存在
+        List<String> preUpdateFrameName = (List) CollectionUtils.intersection(currentFrameNameSet, databaseFrameNameSet);
+
+        // 待删除的机房名称, 文件中存在，数据库中不存在
+        List<String> predeleteFrameName = (List) CollectionUtils.subtract(databaseFrameNameSet, currentFrameNameSet);
+
+
+        try {
+            if (preInsertFrameName != null && preInsertFrameName.size() > 0) {
+                for (String iStr : preInsertFrameName) {
+                    model = new HouseFrameInformationDTO();
+                    String iLine = frameNameLine.get(iStr);
+                    String[] arr = iLine.split(",");
+                    //机架名称
+                    String name = arr[0];
+                    //机房编码
+                    String areaCode = arr[1];
+                    //地区编码
+                    String cityCode = arr[2];
+                    //客户编码
+                    String customerName = arr[3];
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+
+
+    }
+}
